@@ -116,6 +116,8 @@ function App() {
   const drawing = useObservable(false);
   /** 同上：落点要基于最新的点列，不能用闭包里那份快照。 */
   const drawnRef = useRef<Coordinate[]>([]);
+  /** 正在自动重连，挡住重连过程中再次触发的掉线回调。 */
+  const reconnecting = useRef(false);
   const walker = useObservable<PathWalker | null>(null);
   const movementTimer = useObservable<ReturnType<typeof setInterval> | null>(null);
   const joystickVector = useObservable({ dx: 0, dy: 0 });
@@ -406,6 +408,43 @@ function App() {
     saveActiveCache(loc);
   }
 
+  /**
+   * 会话异常中断的统一收尾。
+   *
+   * 锁屏、切后台、系统回收隧道都会打断 RSD 连接（典型是
+   * `RSDTCPAdapter.Failure 错误 0`）。定点模拟可以原地重连——整条链路从配对
+   * 到下发不到一秒，比弹个框让用户自己重来强得多。
+   *
+   * @param retry 能重连就传重连动作；不能（比如移动中）传 null
+   */
+  async function handleSessionDropped(message: string, retry: (() => void) | null) {
+    debugLog("ui", "会话中断", message);
+    session.setValue(null);
+    // 恢复记录故意不删：连接是异常断的，停止指令未必送达，
+    // 下次启动仍要提示用户恢复。
+    void BackgroundKeeper.stopKeepAlive().catch(() => undefined);
+
+    if (retry && !reconnecting.current) {
+      reconnecting.current = true;
+      setSessionState("connecting");
+      setStatusMsg("连接中断，正在重连…");
+      fireToast("连接中断，正在重连…");
+      try {
+        retry();
+        return;
+      } finally {
+        reconnecting.current = false;
+      }
+    }
+
+    setSessionState("idle");
+    setStatusMsg("");
+    activeLoc.setValue(null);
+    saveActiveCache(null);
+    void endLiveActivity();
+    showErrorAlert(message);
+  }
+
   async function handleStartSession() {
     if (!pairing) {
       showErrorAlert("请先在「配对」里导入 wloc 导出的配对记录");
@@ -438,12 +477,7 @@ function App() {
           setStatusMsg(message);
         },
         onFailure: (message) => {
-          session.setValue(null);
-          setSessionState("idle");
-          setStatusMsg("");
-          activeLoc.setValue(null);
-          saveActiveCache(null);
-          showErrorAlert(message);
+          void handleSessionDropped(message, () => void handleStartSession());
         },
       });
       session.setValue(handle);
@@ -593,17 +627,10 @@ function App() {
           setStatusMsg(message);
         },
         onFailure: (message) => {
+          // 移动中掉线不自动重连：重连要从头建会话，而路径进度、往返计数都在
+          // PathWalker 里，续不上。停掉移动、如实报错，让用户自己决定重来。
           stopMovement();
-          session.setValue(null);
-          setSessionState("idle");
-          setStatusMsg("");
-          activeLoc.setValue(null);
-          saveActiveCache(null);
-          // 恢复记录故意不删：连接是异常断的，停止指令未必送达，
-          // 下次启动仍要提示用户恢复。
-          void BackgroundKeeper.stopKeepAlive().catch(() => undefined);
-          void endLiveActivity();
-          showErrorAlert(message);
+          void handleSessionDropped(message, null);
         },
       });
       session.setValue(handle);
@@ -617,7 +644,15 @@ function App() {
         updatedAt: now,
       });
       // 切到别的 App 时脚本要继续跑，否则连接一断模拟就停了。
-      void BackgroundKeeper.keepAlive().catch(() => undefined);
+      // 保活失败过去是静默吞掉的，结果锁屏断连时完全看不出原因——它需要 PRO 权益，
+      // 拿不到就一定会在锁屏后掉线，这种事必须让用户知道。
+      void BackgroundKeeper.keepAlive().then(
+        () => debugLog("keepalive", "后台保活已获取"),
+        (error) => {
+          debugLog("keepalive", "后台保活失败", describeError(error));
+          fireToast("后台保活未生效，锁屏后可能掉线");
+        },
+      );
       void startLiveActivity(start);
       return handle;
     } catch (e) {
