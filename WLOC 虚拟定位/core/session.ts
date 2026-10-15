@@ -373,6 +373,28 @@ async function openTunnelWithDiagnostics(
 ): Promise<VPNRSDTunnel> {
   let lastError: unknown = null;
 
+  // openRSDTunnel 读的是 Scripting **自身**的隧道状态，不认别人提供的回环。
+  // 代理工具模式下这里必定不满足，与其让原生那句英文原文漏到界面上
+  // （"Turn on this app's VPN and LocalDevVPN…"，看着像是用户漏开了什么开关），
+  // 不如提前说清楚：这是接口本身的限制，不是配置错了。
+  const preflight = await VPN.localDevVPN.getState();
+  if (preflight.effectiveStatus !== "active") {
+    debugLog("tunnel", "开隧道前自身状态不满足", JSON.stringify(preflight));
+    if (endpoint.source === "proxyApp") {
+      throw new Error(
+        "当前的隧道接口只接受 Scripting 自己的回环，不认代理工具提供的那条。\n" +
+          `自身隧道现在是 ${preflight.effectiveStatus}（VPN ${preflight.vpnStatus}）。\n\n` +
+          "请到设置里把「隧道来源」改成「Scripting 自身」再试——" +
+          "它会顶掉正在运行的代理工具，这是目前唯一能走通的方式。\n" +
+          "（配对与申请监听都已成功，差的只是这一步。）",
+      );
+    }
+    throw new Error(
+      `本机隧道尚未生效（${preflight.effectiveStatus}，VPN ${preflight.vpnStatus}）。\n` +
+        "请确认 Scripting 已获得 VPN 权限，且系统里没有别的 VPN 占着。",
+    );
+  }
+
   try {
     debugLog("tunnel", `openRSDTunnel host=${endpoint.host} port=${firstPort}`);
     const tunnel = await VPN.localDevVPN.openRSDTunnel({
