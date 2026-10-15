@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 已知限制（先看这里）
+    url: https://github.com/ios151/Scripting/blob/main/WLOC%20%E8%99%9A%E6%8B%9F%E5%AE%9A%E4%BD%8D/README.md
+    about: 金融类应用、恢复定位、步频等问题已有明确结论，不必重复提
+  - name: Scripting 应用本身的问题
+    url: https://scripting.fun
+    about: 应用的 API、崩溃、权限问题请反馈给应用作者，不是本仓库

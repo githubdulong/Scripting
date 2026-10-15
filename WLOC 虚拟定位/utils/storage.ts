@@ -11,9 +11,10 @@ export function loadFavorites(): FavoriteLocation[] {
   return Storage.get<FavoriteLocation[]>(STORAGE_KEYS.favorites) ?? [];
 }
 
-// 写入收藏列表（整体替换）
-export function saveFavorites(favorites: FavoriteLocation[]): boolean {
-  return Storage.set(STORAGE_KEYS.favorites, favorites);
+
+// 写入收藏列表。只有本文件的增删清操作会调它，不对外导出。
+function saveFavorites(list: FavoriteLocation[]): void {
+  Storage.set(STORAGE_KEYS.favorites, list);
 }
 
 // 追加一条收藏，返回新列表

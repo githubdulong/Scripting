@@ -66,14 +66,6 @@ export async function ed25519Sign(seed: Uint8Array, message: Uint8Array): Promis
   return new Uint8Array(signature);
 }
 
-export async function ed25519Verify(
-  publicKey: Uint8Array,
-  signature: Uint8Array,
-  message: Uint8Array,
-): Promise<boolean> {
-  const key = await crypto.subtle.importKey("raw", toArrayBuffer(publicKey), "Ed25519", false, ["verify"]);
-  return crypto.subtle.verify("Ed25519", key, toArrayBuffer(signature), toArrayBuffer(message));
-}
 
 export async function chachaSeal(
   key: Uint8Array,

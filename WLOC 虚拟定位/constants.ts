@@ -10,12 +10,6 @@ import type {
   TunnelSource,
 } from "./types";
 
-/** 默认坐标：深圳 */
-export const DEFAULT_COORDINATE = {
-  latitude: 22.544577,
-  longitude: 113.94114,
-};
-
 /** 默认地图缩放跨度 */
 export const DEFAULT_SPAN = {
   latitudeDelta: 0.02,

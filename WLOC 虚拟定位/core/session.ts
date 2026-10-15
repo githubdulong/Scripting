@@ -409,29 +409,17 @@ async function openTunnelWithDiagnostics(
     debugLog("tunnel", "openRSDTunnel 失败", describeError(error));
   }
 
-  // 失败后再开一个监听，自己拼 ClientHello 探一次——这一步会消费监听，
-  // 所以只在确定要报错时做。结论直接决定锅在哪一侧：
-  //   ServerHello → 设备的 PSK 端点是好的，问题在原生客户端
-  //   Alert       → 设备主动拒绝，带出拒绝原因
-  let probeDetail = "未探测";
-  try {
-    const probePort = await withTimeout(client.createTcpListener(), 15000, "申请探测用端口超时");
-    debugLog("probe", `用端口 ${probePort} 做 TLS ClientHello 探测`);
-    const result = await probeTlsPsk(endpoint.host, probePort);
-    probeDetail = `${result.outcome}：${result.detail}`;
-    debugLog("probe", "探测结果", probeDetail);
-  } catch (error) {
-    probeDetail = `探测本身失败：${error instanceof Error ? error.message : String(error)}`;
-    debugLog("probe", probeDetail);
-  }
-
   debugLog("tunnel", "此时的本机隧道状态", JSON.stringify(await VPN.localDevVPN.getState()));
 
+  // 这里曾经自动跑一次 TLS ClientHello 探测来判断锅在哪一侧。那是为了取证
+  // openRSDTunnel 的 Failure 6，该 bug 已修；而探测会消费掉一次性的隧道监听，
+  // 让这次失败更难复查。要取证的话去「连接状态」页手动跑。
   const detail = lastError instanceof Error ? lastError.message : String(lastError);
   throw new Error(
-    `建立加密隧道失败：${detail}\n` +
-      `（端口 ${firstPort}，PSK ${preSharedKey.length} 字节）\n` +
-      `TLS 探测：${probeDetail}\n` +
+    `建立加密隧道失败：${detail}
+` +
+      `（端口 ${firstPort}，PSK ${preSharedKey.length} 字节）
+` +
       "配对与申请监听都已成功，卡在隧道握手这一步。详细日志见 scripting-cli 终端。",
   );
 }
@@ -503,7 +491,8 @@ async function openLocationChannel(
     preSharedKey = pairing.client.preSharedKey;
     debugLog(
       "pair",
-      `隧道端口 ${tunnelPort}，PSK ${preSharedKey.length} 字节 ${toHex(preSharedKey).slice(0, 16)}…`,
+      // 只记长度，不记内容——日志会被贴进 issue 和聊天窗口，密钥不该跟着走。
+      `隧道端口 ${tunnelPort}，PSK ${preSharedKey.length} 字节`,
     );
   } catch (error) {
     debugLog("pair", "配对阶段失败", describeError(error));
@@ -608,6 +597,36 @@ export async function startLocationSession(options: {
     keepAlive: options.keepAlive !== false,
     onFailure: options.onFailure,
   });
+}
+
+/**
+ * 手动跑一次 TLS-PSK 取证。
+ *
+ * 向设备申请一个隧道监听，然后自己拼一个 TLS 1.2 ClientHello 发过去，看它回什么：
+ *   ServerHello → 设备的 PSK 端点是好的，问题在原生客户端那边
+ *   Alert       → 设备主动拒绝，返回里带着拒绝原因
+ *
+ * **会消费掉一次性的隧道监听**，所以不放在自动失败路径上——跑完这次，
+ * 本次会话的那个监听就没了，要重新配对握手。只在排查隧道问题时手动用。
+ */
+export async function probeTunnelTls(
+  record: PairingRecord,
+  endpoint: TunnelEndpoint,
+  log: StatusReporter = () => {},
+): Promise<string> {
+  await ensureTunnelReady(endpoint, log);
+  const session = await openPairingSession(endpoint, log);
+  try {
+    await session.client.validatePairing(record);
+    log("申请探测用端口…");
+    const port = await withTimeout(session.client.createTcpListener(), 15000, "申请端口超时");
+    log(`用端口 ${port} 发 ClientHello…`);
+    const result = await probeTlsPsk(endpoint.host, port);
+    debugLog("probe", "探测结果", `${result.outcome}：${result.detail}`);
+    return `${result.outcome}：${result.detail}`;
+  } finally {
+    await session.stream.close().catch(() => undefined);
+  }
 }
 
 /**

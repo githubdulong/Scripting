@@ -17,7 +17,7 @@ import {
   useEffect,
   Navigation,
 } from "scripting";
-import { collectDiagnostics, type DiagnosticItem } from "../core/session";
+import { collectDiagnostics, probeTunnelTls, type DiagnosticItem } from "../core/session";
 import { loadPairing } from "../core/pairing";
 import { loadSettings } from "../utils/storage";
 
@@ -41,6 +41,45 @@ export function DiagnosticsPage() {
       setStatus("");
     } catch (error) {
       setStatus(`诊断失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * TLS-PSK 取证。
+   *
+   * 会消费掉一次性的隧道监听，跑完要重新配对握手才能开模拟——所以做成按钮，
+   * 而且先问一句。只有排查「隧道建不起来」时才需要它。
+   */
+  async function runTlsProbe() {
+    const record = loadPairing();
+    if (!record) {
+      setStatus("没有配对记录，无法探测");
+      return;
+    }
+    const ok = await Dialog.confirm({
+      title: "跑一次 TLS 取证？",
+      message:
+        "会向设备申请一个一次性的隧道监听并把它用掉。\n" +
+        "跑完这次，本次会话要重新配对握手才能开始模拟。\n\n" +
+        "只有在「建立加密隧道失败」时才需要它。",
+      confirmLabel: "开始探测",
+      cancelLabel: "取消",
+    });
+    if (!ok) return;
+
+    setBusy(true);
+    try {
+      const settings = loadSettings();
+      const detail = await probeTunnelTls(
+        record,
+        { host: settings.deviceHost, source: settings.tunnelSource },
+        setStatus,
+      );
+      setStatus(`TLS 探测：${detail}`);
+    } catch (error) {
+      setStatus(`探测失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBusy(false);
     }
@@ -108,6 +147,26 @@ export function DiagnosticsPage() {
             ))}
           </Section>
         )}
+
+        <Section
+          header={<Text font="caption" foregroundStyle="secondaryLabel">进阶取证</Text>}
+          footer={
+            <Text font="caption2" foregroundStyle="tertiaryLabel">
+              只在「建立加密隧道失败」时才需要。向设备要一个隧道监听并自己发一个
+              TLS 1.2 ClientHello：回 ServerHello 说明设备侧是好的，问题在客户端；
+              回 Alert 则带着设备的拒绝原因。
+              {"\n\n"}
+              会用掉那个一次性监听，跑完要重新配对握手才能开始模拟。
+            </Text>
+          }
+        >
+          <Button
+            title={busy ? "进行中…" : "跑一次 TLS 取证"}
+            systemImage="stethoscope.circle"
+            disabled={busy}
+            action={() => void runTlsProbe()}
+          />
+        </Section>
 
         <Section
           header={<Text font="caption" foregroundStyle="secondaryLabel">连不上时先看这几条</Text>}

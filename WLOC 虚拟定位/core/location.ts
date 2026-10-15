@@ -12,7 +12,7 @@ const SERVICE_IDENTIFIER = "com.apple.instruments.server.services.LocationSimula
  * 发给设备只会得到一个难懂的 DVT 错误，不如在这里拦掉。
  * 与 wloc（iOS）原生引擎的 `LocationCoordinates::validated` 同口径。
  */
-export function validateCoordinate(latitude: number, longitude: number): void {
+function validateCoordinate(latitude: number, longitude: number): void {
   if (
     !Number.isFinite(latitude) ||
     !Number.isFinite(longitude) ||

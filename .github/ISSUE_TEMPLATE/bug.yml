@@ -1,0 +1,100 @@
+name: Bug 反馈
+description: 功能不对、报错、崩溃
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **提交之前请先确认这几条**，它们占了反馈量的一大半：
+
+        - 开发者模式开着吗？（设置 → 隐私与安全性 → 开发者模式）
+        - iPhone 重启过吗？配对授权是内存态，重启后要重新配对
+        - 系统里还有别的 VPN 在连吗？iOS 同时只允许一条生效
+        - 脚本里的「设置 → 连接状态」跑一遍，截图贴上来
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 一两句话说清楚。不要写「不能用」——说清是哪一步、看到了什么。
+      placeholder: |
+        点「开始位置模拟」后弹出「建立加密隧道失败」，地图上的位置没有变化。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 怎么复现
+      description: 从打开脚本开始，一步一步写。能稳定复现的最有价值。
+      placeholder: |
+        1. 打开脚本，地图定位到北京王府井
+        2. 点地图选一个点
+        3. 点「开始位置模拟」
+        4. 约 3 秒后弹出错误
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你期望的结果
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 脚本版本
+      description: 设置 → 关于，或 script.json 里的 version
+      placeholder: "2.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: ios
+    attributes:
+      label: 设备与系统
+      placeholder: "iPhone 15 Pro / iOS 26.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tunnel
+    attributes:
+      label: 隧道来源
+      options:
+        - Scripting 自身
+        - 代理工具提供
+        - 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 连接状态诊断
+      description: 设置 → 连接状态，跑完截图或把文字贴这里
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: |
+        用 scripting-cli 连着的话，把相关那段贴上来。
+        `core/debug.ts` 顶部的 `DEBUG` 置为 `true` 会输出详细过程。
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 提交前自查
+      options:
+        - label: 我确认贴出的内容里**没有配对记录、私钥、PIN**（配对记录等同于设备的调试授权）
+          required: true
+        - label: 我已经看过「已知限制」，确认不是其中之一
+          required: true

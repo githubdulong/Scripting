@@ -60,7 +60,6 @@ export class PairVerifyRejected extends Error {
   }
 }
 
-/** `requestPairConsent` 的结果：被拒，或拿到了 SRP 的 salt 与公钥。 */
 export interface PairConsentResult {
   kind: "rejected" | "ready";
   message?: string;
@@ -285,83 +284,6 @@ export class RemotePairingClient {
     this.serverKey = await hkdfSha512(this.sharedSecret, EMPTY, SERVER_ENCRYPT_INFO);
   }
 
-  /**
-   * 发起 pair-setup，请设备弹出「信任」对话框。
-   *
-   * 这是主动方配对（pymobiledevice3 的 `_request_pair_consent`）：全程走当前这条
-   * 连接，不需要 mDNS 广播，也不用去系统设置里找「与 xx 配对」。
-   * iPhone 上用户点一下信任即可，PIN 只有 tvOS / visionOS 才要。
-   *
-   * 设备同意后会给出 SRP 的 salt 与公钥，后续才是 SRP-6a 证明交换。
-   */
-  async requestPairConsent(
-    sendingHost: string,
-    consentTimeoutMs = 90000,
-    onStatus?: (message: string) => void,
-  ): Promise<PairConsentResult> {
-    await this.sendPairingData({
-      data: toBase64(
-        encodeTLV8([
-          { type: TLV8Type.Method, data: new Uint8Array([0x00]) },
-          { type: TLV8Type.State, data: new Uint8Array([0x01]) },
-        ]),
-      ),
-      kind: "setupManualPairing",
-      sendingHost,
-      startNewSession: true,
-    });
-
-    // 第一次回应也要给足时间：有的设备是先弹框、等用户点完才回第一个包，
-    // 而不是先回一个 awaitingUserConsent。没有超时的话这里会一直挂着。
-    onStatus?.("已发出配对请求，请留意设备上的弹窗…");
-    const response = await withTimeout(
-      this.socket.receive(),
-      consentTimeoutMs,
-      "设备既没有回应也没有断开——该机型多半不接受在本机直接配对",
-    );
-    debugLog("pair", "pair-setup 首响应", JSON.stringify(response).slice(0, 600));
-    const event = response?.event?._0 ?? response;
-
-    const rejection = event?.pairingRejectedWithError;
-    if (rejection) {
-      const reason =
-        rejection?.wrappedError?.userInfo?.NSLocalizedDescription ??
-        JSON.stringify(rejection).slice(0, 300);
-      return { kind: "rejected", message: String(reason) };
-    }
-
-    // 设备正在弹框等用户点「信任」，同意后才会补发 pairingData。
-    let payload = event?.pairingData?._0?.data;
-    if (payload === undefined) {
-      if (event?.awaitingUserConsent === undefined) {
-        return { kind: "rejected", message: `设备返回了预期外的响应：${JSON.stringify(event).slice(0, 300)}` };
-      }
-      onStatus?.("设备已弹出确认框，请点「信任」…");
-      const consent = await withTimeout(
-        this.socket.receive(),
-        consentTimeoutMs,
-        "等待用户在设备上点「信任」超时",
-      );
-      debugLog("pair", "用户同意后的响应", JSON.stringify(consent).slice(0, 400));
-      payload = (consent?.event?._0 ?? consent)?.pairingData?._0?.data;
-      if (payload === undefined) {
-        return { kind: "rejected", message: `同意后设备仍未给出配对数据：${JSON.stringify(consent).slice(0, 300)}` };
-      }
-    }
-
-    const tlv = decodeTLV8(fromBase64(payload));
-    if (hasError(tlv)) {
-      return { kind: "rejected", message: `设备返回错误码 ${errorCode(tlv)}（2 多为短时间内重试过多）` };
-    }
-
-    const salt = tlv.get(TLV8Type.Salt);
-    const publicKey = tlv.get(TLV8Type.PublicKey);
-    if (!salt || !publicKey) {
-      return { kind: "rejected", message: "设备未给出 SRP 的 salt 与公钥" };
-    }
-
-    return { kind: "ready", salt, publicKey };
-  }
 
   /**
    * 请设备开一条 TCP 隧道监听，返回端口。此请求必须加密发送。

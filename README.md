@@ -72,6 +72,14 @@ npx -y -p typescript@5.6 tsc --noEmit -p tsconfig.json
 - **重启后需重新配对** —— iOS 的配对授权是内存态，iPhone 重启即失效。
 - **同时只能有一条 VPN** —— 用 Scripting 自身的隧道会顶掉正在跑的代理工具，可在设置里切换来源。
 
+## 参与开发
+
+先读 [CONTRIBUTING.md](CONTRIBUTING.md)——里面写了项目边界（哪些方向不接受）、
+自测怎么跑、以及几个踩过的 Scripting API 坑。
+
+提 issue 请用模板，Bug 那个模板里的「连接状态诊断」一栏很关键，
+缺了基本只能靠猜。**任何情况下都不要贴配对记录或私钥。**
+
 ## 致谢
 
 - **[BlackCCCat](https://github.com/BlackCCCat/Scripting-Scripts)** —— 界面基座，WLOC 的 UI 沿用自其同名脚本

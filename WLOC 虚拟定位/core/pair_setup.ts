@@ -29,7 +29,7 @@ export function createPIN(): string {
 function nonce(step: number) { return concat(new Uint8Array(4), utf8(`PS-Msg0${step}`)); }
 
 /** Device is the rppairing host/initiator; this script answers as the accessory. */
-export async function acceptPairing(socket: RpPairingSocket, host: PairingHostIdentity, pin: string): Promise<PairingRecord> {
+async function acceptPairing(socket: RpPairingSocket, host: PairingHostIdentity, pin: string): Promise<PairingRecord> {
   let sessionKey: Uint8Array | undefined, cipher: Uint8Array | undefined, plain: Uint8Array | undefined;
   async function send(entries: TLV8Entry[]) {
     await socket.sendPlain({event: {_0: {pairingData: {_0: {data: toBase64(encodeTLV8(entries)), startNewSession: false, kind: "setupManualPairing"}}}}});

@@ -1,0 +1,39 @@
+name: 功能建议
+description: 想加个功能、或想改现有行为
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的是什么问题
+      description: |
+        先说问题，别直接说方案。
+        「我想要 X」常常不如「我在做 Y 的时候卡在 Z」有用——后者能让我们找到更好的解法。
+      placeholder: |
+        模拟跑步的时候想对照真实配速，但界面上只有 km/h，心算成「分钟/公里」很麻烦。
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你设想的做法
+      description: 有想法就写，没有也行。
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 现在是怎么凑合的
+      description: 有没有别的办法绕过去？这能帮我们判断优先级。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 范围确认
+      options:
+        - label: 我知道这不是请求「绕过金融类应用的风控」或「隐藏模拟痕迹」——那类需求不会实现
+          required: true

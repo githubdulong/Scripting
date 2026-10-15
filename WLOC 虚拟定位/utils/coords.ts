@@ -5,7 +5,7 @@ import type { ParsedCoord } from "../types";
 import { isInsideChina } from "../constants";
 
 /** 安全解码 URL 组件 */
-export function safeDecode(s: string | null | undefined): string {
+function safeDecode(s: string | null | undefined): string {
   if (!s) return "";
   try {
     return decodeURIComponent(String(s).replace(/\+/g, " "));
@@ -15,7 +15,7 @@ export function safeDecode(s: string | null | undefined): string {
 }
 
 /** 保留 6 位小数 */
-export function round6(n: number): number {
+function round6(n: number): number {
   return Math.round(Number(n) * 1e6) / 1e6;
 }
 
@@ -27,7 +27,7 @@ export function round6(n: number): number {
  *  - Google Maps ll=/@/center=
  *  - 纯文本 纬度,经度
  */
-export function extractFromString(s: string): ParsedCoord | null {
+function extractFromString(s: string): ParsedCoord | null {
   if (!s) return null;
   const str = String(s);
   let m: RegExpMatchArray | null;
@@ -83,7 +83,7 @@ declare const fetch: (input: string, init?: any) => Promise<any>;
  * 展开短链接：对疑似短链发 fetch 请求，跟踪 302 重定向后
  * 返回最终落地 URL。非链接或展开失败则原样返回。
  */
-export async function expandShortUrl(raw: string): Promise<string> {
+async function expandShortUrl(raw: string): Promise<string> {
   const urlMatch = raw.match(/https?:\/\/[^\s'"<>]+/i);
   if (!urlMatch) return raw;
   const url = urlMatch[0];
@@ -108,27 +108,10 @@ export async function expandShortUrl(raw: string): Promise<string> {
 }
 
 /**
- * 解析输入（可能含中文地名+链接），返回坐标。
- * 同步版本：不做远程请求，仅正则匹配。
- */
-export function parseCoordsSync(raw: string): ParsedCoord {
-  const text = String(raw || "").trim();
-  if (!text) throw new Error("空输入");
-
-  const urlMatch = text.match(/https?:\/\/[^\s'"<>]+/i);
-  const target = urlMatch ? urlMatch[0] : text;
-
-  const hit = extractFromString(target);
-  if (hit) return hit;
-
-  throw new Error("未能从链接中解析出经纬度");
-}
-
-/**
  * 解析输入，返回坐标。异步版本：
  * 先尝试同步正则，失败后展开短链再重试。
  */
-export async function parseCoordsAsync(raw: string): Promise<ParsedCoord> {
+async function parseCoordsAsync(raw: string): Promise<ParsedCoord> {
   // 第一步：同步正则快速路径
   const text = String(raw || "").trim();
   if (!text) throw new Error("空输入");
@@ -172,7 +155,7 @@ function gcjDeltaLon(x: number, y: number): number {
 }
 
 /** WGS-84 → GCJ-02（正向偏移），与高德/苹果中国所用偏移一致 */
-export function wgs84ToGcj02(lat: number, lon: number): { latitude: number; longitude: number } {
+function wgs84ToGcj02(lat: number, lon: number): { latitude: number; longitude: number } {
   if (!isInsideChina(lon, lat)) return { latitude: lat, longitude: lon };
   let dLat = gcjDeltaLat(lon - 105.0, lat - 35.0);
   let dLon = gcjDeltaLon(lon - 105.0, lat - 35.0);
@@ -186,7 +169,7 @@ export function wgs84ToGcj02(lat: number, lon: number): { latitude: number; long
 }
 
 /** GCJ-02 → WGS-84（迭代反算，亚米级精度） */
-export function gcj02ToWgs84(lat: number, lon: number): { latitude: number; longitude: number } {
+function gcj02ToWgs84(lat: number, lon: number): { latitude: number; longitude: number } {
   if (!isInsideChina(lon, lat)) return { latitude: lat, longitude: lon };
   let wgsLat = lat;
   let wgsLon = lon;
