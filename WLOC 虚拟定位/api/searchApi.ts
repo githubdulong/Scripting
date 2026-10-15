@@ -1,7 +1,19 @@
 // 地点搜索：国内走 MapKit，境外走中转 Worker 调 OpenStreetMap。
 //
-// 中国大陆的 iPhone，系统 MapKit 的数据源是高德，搜不到境外 POI；
+// 中国大陆的 iPhone，系统 MapKit 的数据源是高德，没有境外 POI 数据。
 // 「全球」模式因此改走 Worker → Nominatim，与 wloc（iOS）用的是同一个接口。
+//
+// **不要试图用系统接口替掉这个 Worker。** 2026-10-16 在大陆 iPhone 实测：
+//
+//   MapSearch.locate("Eiffel Tower")                  → 巴黎铁塔 @ 30.584, 103.728（四川的山寨）
+//   MapSearch.locate("Eiffel Tower", region=巴黎)      → MKErrorDomain 4（placemarkNotFound）
+//   MapSearch.locate("Times Square", region=纽约)      → MKErrorDomain 4
+//   Location.geocodeAddress("Eiffel Tower, Paris")    → 上海市崇明区埃菲尔铁塔 @ 31.730, 121.247
+//   MapSearch.locate("王府井")（对照）                  → 王府井步行街 @ 39.913, 116.412 ✓
+//
+// 给境外 region 直接报错；不给 region 则拿国内同名建筑顶替——返回的是一个
+// 格式正确、坐标完全错误的结果。对定位模拟来说这比返回空更危险：
+// 用户以为定位到了巴黎，实际在成都。
 
 import { fromDeviceCoordinate } from "../utils/coords";
 import type { Coordinate } from "../types";

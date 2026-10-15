@@ -93,7 +93,7 @@ SwiftUI 把列表行当成一个点击目标。做一排颜色圆点时栽过—
 
 ### 2.5 实时活动的卡片生命周期独立于脚本
 
-> 另见 **2.15**：一个脚本只能注册一个 Live Activity。
+> 另见 **2.16**：一个脚本只能注册一个 Live Activity。
 
 
 脚本被划掉、会话异常中断时卡片都会留在灵动岛上，内容停在最后一次更新那一刻。
@@ -185,7 +185,25 @@ camera / item）由 MapKit 决定，camera 形态下拿不到跨度，倾斜后�
 反过来，`Location.reverseGeocode` 和 `Location.requestCurrent` 给的是 WGS-84，
 摆到地图上要先 `fromDeviceCoordinate`。
 
-### 2.15 一个脚本只能注册一个 Live Activity
+### 2.15 大陆设备搜不到境外地点，而且会给错答案
+
+全球搜索走的是 Cloudflare Worker 中转 Nominatim（`api/searchApi.ts`）。
+**不要试图用系统接口替掉它。** 2026-10-16 在大陆 iPhone 实测：
+
+| 调用 | 结果 |
+|---|---|
+| `MapSearch.locate("Eiffel Tower")` | 巴黎铁塔 @ 30.584, 103.728（**四川**的山寨） |
+| `MapSearch.locate("Eiffel Tower", region=巴黎)` | `MKErrorDomain 4`（placemarkNotFound） |
+| `MapSearch.locate("Times Square", region=纽约)` | `MKErrorDomain 4` |
+| `Location.geocodeAddress("Eiffel Tower, Paris, France")` | 上海市崇明区埃菲尔铁塔 @ 31.730, 121.247 |
+| `MapSearch.locate("王府井")`（对照） | 王府井步行街 @ 39.913, 116.412 ✓ |
+
+大陆 iPhone 的地图数据源是高德，没有境外 POI。给境外 `region` 直接报错；
+不给 `region` 则**拿国内同名建筑顶替**——返回一个格式正确、坐标完全错误的结果。
+
+对定位模拟来说这比返回空更危险：用户以为定位到了巴黎，实际在成都。
+
+### 2.16 一个脚本只能注册一个 Live Activity
 
 ```ts
 // 错：注册两个，应用分不清运行中的活动该用哪个 builder，
