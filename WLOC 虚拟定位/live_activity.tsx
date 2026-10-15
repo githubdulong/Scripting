@@ -12,6 +12,7 @@ import {
   Spacer,
   Text,
   Image,
+  Button,
   ProgressView,
   TimerIntervalLabel,
   type Color,
@@ -23,9 +24,10 @@ import {
   LiveActivityUIExpandedTrailing,
   type LiveActivityUIBuilder,
 } from "scripting";
+import { RestoreLocationIntent } from "./app_intents";
 
 export interface SimulationState {
-  /** 地点名；没有名字时由界面层填坐标文本 */
+  /** 地点名；点空地且反查不到时为空字符串，此时卡片只显示坐标 */
   place: string;
   latitude: number;
   longitude: number;
@@ -92,10 +94,25 @@ function ContentView(state: SimulationState) {
           font="title2"
         />
         <VStack alignment="leading" spacing={2}>
-          <Text font="subheadline" fontWeight="semibold">{state.place}</Text>
-          <Text font="caption2" foregroundStyle="tertiaryLabel">{coordinateText(state)}</Text>
+          {/* 有地名就「地名 + 坐标」两行，没有就只留坐标——
+              别让同一串坐标在卡片上出现两次 */}
+          <Text font="subheadline" fontWeight="semibold">
+            {state.place || coordinateText(state)}
+          </Text>
+          {state.place ? (
+            <Text font="caption2" foregroundStyle="tertiaryLabel">{coordinateText(state)}</Text>
+          ) : null}
         </VStack>
         <Spacer />
+        {/* 锁屏上一键收尾：卡片本来就是来提醒「位置是假的」，顺手给个出口 */}
+        <Button
+          title="恢复"
+          systemImage="location.slash.fill"
+          tint="systemRed"
+          buttonStyle="borderedProminent"
+          controlSize="small"
+          intent={RestoreLocationIntent(undefined)}
+        />
         <VStack alignment="trailing" spacing={2}>
           <Text font="caption" fontWeight="semibold" foregroundStyle={accent(state)}>
             {statusText(state)}
@@ -177,8 +194,12 @@ const builder: LiveActivityUIBuilder<SimulationState> = (state) => (
 
     <LiveActivityUIExpandedCenter>
       <VStack alignment="leading" spacing={2}>
-        <Text font="subheadline" fontWeight="semibold">{state.place}</Text>
-        <Text font="caption2" foregroundStyle="tertiaryLabel">{coordinateText(state)}</Text>
+        <Text font="subheadline" fontWeight="semibold">
+          {state.place || coordinateText(state)}
+        </Text>
+        {state.place ? (
+          <Text font="caption2" foregroundStyle="tertiaryLabel">{coordinateText(state)}</Text>
+        ) : null}
       </VStack>
     </LiveActivityUIExpandedCenter>
 
@@ -189,7 +210,17 @@ const builder: LiveActivityUIBuilder<SimulationState> = (state) => (
           <Text font="caption2" foregroundStyle="secondaryLabel">{detailText(state)}</Text>
         </VStack>
       ) : (
-        <Text font="caption2" foregroundStyle="systemOrange">用完请记得恢复真实位置</Text>
+        <HStack spacing={8}>
+          <Text font="caption2" foregroundStyle="systemOrange">用完请记得恢复真实位置</Text>
+          <Spacer />
+          <Button
+            title="恢复真实位置"
+            systemImage="location.slash.fill"
+            tint="systemRed"
+            controlSize="small"
+            intent={RestoreLocationIntent(undefined)}
+          />
+        </HStack>
       )}
     </LiveActivityUIExpandedBottom>
   </LiveActivityUI>

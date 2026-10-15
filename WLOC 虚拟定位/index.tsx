@@ -277,14 +277,55 @@ function App() {
     fireToast("已定位到该坐标");
   }
 
+  /**
+   * 反查地名。
+   *
+   * 点空地选点时 MapKit 不给名称，锁屏卡片上就只剩两行一模一样的坐标。
+   * 这里补一次反向地理编码，拼成「街道 · 区」这种能认出来的说法。
+   * 查不到就算了，卡片退回显示坐标，不影响模拟。
+   */
+  async function resolvePlaceName(lat: number, lng: number): Promise<void> {
+    try {
+      // 反查要用设备坐标系（WGS-84），地图上拿到的是地图系，先换过去。
+      const wgs = toDeviceCoordinate(lat, lng);
+      const marks = await Location.reverseGeocode({
+        latitude: wgs.latitude,
+        longitude: wgs.longitude,
+      });
+      const mark = marks?.[0];
+      if (!mark) return;
+
+      // name 往往已经是「××路123号」这类完整说法，优先用它；
+      // 没有就拿街道 + 子区域拼，两者都没有才退回区县。
+      const label =
+        mark.name?.trim() ||
+        [mark.thoroughfare, mark.subLocality].filter(Boolean).join(" ") ||
+        mark.locality ||
+        "";
+      if (!label) return;
+
+      // 期间用户可能又点了别处，坐标对不上就丢弃这次结果。
+      if (coordLat.value !== lat || coordLng.value !== lng) return;
+      debugLog("geocode", `${lat.toFixed(5)}, ${lng.toFixed(5)} → ${label}`);
+      setPlaceName(label);
+      setHistory(addHistory(label, lat, lng));
+    } catch (error) {
+      debugLog("geocode", "反查地名失败", describeError(error));
+    }
+  }
+
   function handleCoordChange(lat: number, lng: number, name?: string) {
     coordLat.setValue(lat);
     coordLng.setValue(lng);
     coordReady.setValue(true);
-    // 点中 POI 时 MapKit 会给出名称，留着给实时活动和历史记录用。
     if (name !== undefined) {
+      // 点中 POI 时 MapKit 直接给名称，比反查的结果准，优先用。
       setPlaceName(name);
       setHistory(addHistory(name || "地图选点", lat, lng));
+    } else {
+      // 点的是空地：先清掉上一个点的名字，再去反查，免得卡片上挂着旧地名。
+      setPlaceName("");
+      void resolvePlaceName(lat, lng);
     }
     // 手绘模式下点地图就是落点，不用为了加一个点去开合一次面板。
     if (drawing.value) appendDrawnPoint(lat, lng);
@@ -563,7 +604,8 @@ function App() {
     // 摇杆是手推的，没有「总长」可言；沿路线/手绘才有进度。
     const walk = movementKind === "route" ? walker.value?.state : undefined;
     return {
-      place: placeName || `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`,
+      // 没查到地名时标题留空，卡片那边会只显示坐标，不会出现两行一样的
+      place: placeName,
       latitude: point.latitude,
       longitude: point.longitude,
       mode: moving ? (movementKind === "joystick" ? `摇杆 · ${info.label}` : info.label) : "",
