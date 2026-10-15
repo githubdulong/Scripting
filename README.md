@@ -136,6 +136,15 @@ npx -y -p typescript@5.6 tsc --noEmit -p tsconfig.json
 - [Roam Control](https://github.com/seanhowarthdev/Roam-Control) —— 同类的原生实现（MIT），协议层可对照着读
 - [idevice](https://github.com/jkcoxson/idevice)、[pymobiledevice3](https://github.com/doronz88/pymobiledevice3) —— 协议参考
 
+## 许可
+
+**[GPL-3.0](LICENSE)**。代码随便看、随便改、随便用，但**任何衍生作品都必须同样以
+GPL-3.0 开源并提供完整源码**——拿去改一改做成闭源 App 售卖这条路，协议上走不通。
+
+第三方来源与许可范围见 [NOTICE.md](NOTICE.md)。其中一点要如实说明：界面最初基于
+BlackCCCat 的 Scripting 脚本改写，而**原脚本未声明任何许可**；协议层（`core/`）
+则是完全独立的 TypeScript 实现，未复制任何上游源码。
+
 ## 声明
 
 脚本只在你自己拥有并控制的设备上运行，不上传任何位置、搜索或配对数据。配对记录存于钥匙串，仅本机可读。

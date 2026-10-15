@@ -26,7 +26,11 @@
   "name": "WLOC 虚拟定位",
   "color": "rgba(52, 199, 89,1)",
   "entry": "index.tsx",
-  "permissions": ["vpn", "localDevVPN", "location"],
+  "permissions": [
+    "vpn",
+    "localDevVPN",
+    "location"
+  ],
   "author": {
     "name": "ios151",
     "email": null,
@@ -50,5 +54,6 @@
   "runInApp": true,
   "remoteResource": {
     "url": "https://raw.githubusercontent.com/ios151/Scripting/main/dist/WLOC.zip"
-  }
+  },
+  "license": "GPL-3.0-or-later"
 }

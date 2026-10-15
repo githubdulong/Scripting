@@ -1,3 +1,15 @@
+// WLOC 虚拟定位 —— Scripting 应用上的本机定位模拟脚本
+// Copyright (C) 2026 ios151
+//
+// 本程序是自由软件：你可以依据自由软件基金会发布的 GNU 通用公共许可证
+// （第 3 版或任何后续版本）条款重新分发和/或修改它。
+//
+// 分发本程序是希望它能派上用场，但不提供任何担保；甚至不包含适销性或
+// 特定用途适用性的默示担保。详见 GNU 通用公共许可证。
+//
+// 你应当已随本程序收到一份 GNU 通用公共许可证副本（见 LICENSE）；
+// 如果没有，请见 <https://www.gnu.org/licenses/>。
+
 // WLOC 虚拟定位 — 入口
 //
 // 在地图上选点，经苹果官方开发者接口（本机隧道 → RemotePairing → RSD → DVT）
@@ -365,7 +377,7 @@ function App() {
     } catch (error) {
       // 查不到不影响模拟，卡片退回显示坐标即可。记一笔免得对同一个点反复请求。
       placeCache.current.set(key, "");
-      debugLog("geocode", `${key} 查不到地名（隧道开着时常见）`, describeError(error));
+      debugLog("geocode", `${key} 查不到地名（隧道开着时偶发，多数地点正常）`, describeError(error));
     }
   }
 
