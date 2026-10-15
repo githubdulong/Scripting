@@ -189,14 +189,11 @@ export function MapPage({
    * 相机给出中心与跨度，GeometryReader 给出视图尺寸，线性插值即可。
    * 地图是墨卡托投影、纬度并非严格线性，不过在城市级跨度下误差只有米级。
    *
-   * 相机被倾斜（3D）或旋转之后这套线性换算就不成立了——那是透视投影，
-   * 平面插值会把点算到别的地方去。这种情况返回 null、让调用方提示用户，
-   * 比默默给一个错坐标强（之前是退回地图中心，表现就是「点哪都选中间」）。
+   * 取不到跨度时返回 null，由调用方提示——默默退回地图中心会表现成
+   * 「点哪都选中间」，比不响应更难查。
+   * 相机被倾斜或旋转的情况在调用处单独处理（会先把相机摆正）。
    */
   function coordinateAtPoint(point: Point, size: { width: number; height: number }): Coordinate | null {
-    const camera = cameraPosition.value.camera;
-    if (camera && (camera.pitch !== 0 || camera.heading !== 0)) return null;
-
     const span = visibleSpan();
     if (!span || size.width <= 0 || size.height <= 0) return null;
 
@@ -219,6 +216,23 @@ export function MapPage({
             frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
             onTapGesture={{
               perform: (location: Point) => {
+                // 倾斜或旋转后是透视投影，平面插值算不出正确坐标。
+                // 与其让用户自己去找 2D/3D 按钮，不如就地把相机摆正——
+                // 中心和距离都不动，只把 pitch / heading 归零，视野不跳。
+                const camera = cameraPosition.value.camera;
+                if (camera && (camera.pitch !== 0 || camera.heading !== 0)) {
+                  cameraPosition.setValue(
+                    MapCameraPosition.camera({
+                      centerCoordinate: camera.centerCoordinate,
+                      distance: camera.distance,
+                      heading: 0,
+                      pitch: 0,
+                    }),
+                  );
+                  onPickUnavailable();
+                  return;
+                }
+
                 const picked = coordinateAtPoint(location, proxy.size);
                 if (picked) onCoordChange(picked.latitude, picked.longitude);
                 else onPickUnavailable();

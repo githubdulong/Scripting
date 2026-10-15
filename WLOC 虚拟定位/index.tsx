@@ -1357,7 +1357,7 @@ function App() {
         jitterRadius={settings.jitterRadius}
         drawnPath={drawnPath}
         onCoordChange={handleCoordChange}
-        onPickUnavailable={() => fireToast("3D 或旋转视角下点选不准，请先点右上角的 2D/3D 按钮回正")}
+        onPickUnavailable={() => fireToast("已把视角摆正，再点一次即可选点")}
       />
 
       <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} alignment="leading">
