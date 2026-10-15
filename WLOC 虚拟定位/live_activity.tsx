@@ -107,12 +107,19 @@ function progress(state: SimulationState): number | null {
   return Math.min(1, Math.max(0, state.travelled / state.total));
 }
 
+/**
+ * 锁屏 / 通知中心里的完整卡片。
+ *
+ * 苹果没给「点卡片本体」的钩子（`LiveActivityOptions` 里没有 deeplink），
+ * 能交互的只有 Button + AppIntent，所以恢复做成底部整行的按钮——
+ * 挤在状态旁边的小按钮在锁屏上基本点不中。
+ */
 function ContentView(state: SimulationState) {
   const ratio = progress(state);
   return (
     <VStack
       alignment="leading"
-      spacing={6}
+      spacing={8}
       padding={{ vertical: 12, leading: 14, trailing: 14 }}
       activityBackgroundTint={{ light: "clear", dark: "clear" }}
     >
@@ -123,8 +130,7 @@ function ContentView(state: SimulationState) {
           font="title2"
         />
         <VStack alignment="leading" spacing={2}>
-          {/* 有地名就「地名 + 坐标」两行，没有就只留坐标——
-              别让同一串坐标在卡片上出现两次 */}
+          {/* 有地名就「地名 + 坐标」两行，没有就只留坐标，别让同一串出现两次 */}
           <Text font="subheadline" fontWeight="semibold">
             {state.place || coordinateText(state)}
           </Text>
@@ -133,15 +139,6 @@ function ContentView(state: SimulationState) {
           ) : null}
         </VStack>
         <Spacer />
-        {/* 锁屏上一键收尾：卡片本来就是来提醒「位置是假的」，顺手给个出口 */}
-        <Button
-          title="恢复"
-          systemImage="location.slash.fill"
-          tint="systemRed"
-          buttonStyle="borderedProminent"
-          controlSize="small"
-          intent={RestoreLocationIntent(undefined)}
-        />
         <VStack alignment="trailing" spacing={2}>
           <Text font="caption" fontWeight="semibold" foregroundStyle={accent(state)}>
             {statusText(state)}
@@ -160,13 +157,18 @@ function ContentView(state: SimulationState) {
 
       {detailText(state) ? (
         <Text font="caption2" foregroundStyle="secondaryLabel">{detailText(state)}</Text>
-      ) : (
-        <Text font="caption2" foregroundStyle="systemOrange">用完请记得恢复真实位置</Text>
-      )}
-
-      {ratio !== null ? (
-        <ProgressView value={ratio} total={1} tint={accent(state)} />
       ) : null}
+
+      {ratio !== null ? <ProgressView value={ratio} total={1} tint={accent(state)} /> : null}
+
+      <Button
+        title="恢复真实位置"
+        systemImage="location.slash.fill"
+        tint="systemRed"
+        buttonStyle="borderedProminent"
+        frame={{ maxWidth: "infinity" }}
+        intent={RestoreLocationIntent(undefined)}
+      />
     </VStack>
   );
 }

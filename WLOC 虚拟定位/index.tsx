@@ -57,6 +57,7 @@ import { debugLog, describeError } from "./core/debug";
 import { restoreRealLocation, startLocationSession, type LocationSessionHandle } from "./core/session";
 import { defaultSpeed, joystickStep, modeInfo, PathWalker, type WalkState } from "./core/movement";
 import { parseGPX } from "./core/gpx";
+import { delay } from "./core/stream";
 import { DEFAULT_GLOBAL_ENDPOINT } from "./api/searchApi";
 import { SimulationLiveActivity, type SimulationState } from "./live_activity";
 
@@ -285,13 +286,22 @@ function App() {
    * 查不到就算了，卡片退回显示坐标，不影响模拟。
    */
   async function resolvePlaceName(lat: number, lng: number): Promise<void> {
+    // 反查要用设备坐标系（WGS-84），地图上拿到的是地图系，先换过去。
+    const wgs = toDeviceCoordinate(lat, lng);
+
+    // 反查要联网，偶尔会抛 kCLErrorDomain 2（网络不可用）。等一下再试一次就好，
+    // 不必把这种瞬时失败摆到用户面前。再失败就放弃——系统的地理编码有频率限制，
+    // 一直重试只会让它更不愿意理你。
+    const lookup = async () =>
+      await Location.reverseGeocode({ latitude: wgs.latitude, longitude: wgs.longitude });
+
     try {
-      // 反查要用设备坐标系（WGS-84），地图上拿到的是地图系，先换过去。
-      const wgs = toDeviceCoordinate(lat, lng);
-      const marks = await Location.reverseGeocode({
-        latitude: wgs.latitude,
-        longitude: wgs.longitude,
+      let marks = await lookup().catch(async (error) => {
+        debugLog("geocode", "首次反查失败，1.5 秒后重试", describeError(error));
+        await delay(1500);
+        return await lookup();
       });
+
       const mark = marks?.[0];
       if (!mark) return;
 
