@@ -93,6 +93,9 @@ SwiftUI 把列表行当成一个点击目标。做一排颜色圆点时栽过—
 
 ### 2.5 实时活动的卡片生命周期独立于脚本
 
+> 另见 **2.15**：一个脚本只能注册一个 Live Activity。
+
+
 脚本被划掉、会话异常中断时卡片都会留在灵动岛上，内容停在最后一次更新那一刻。
 所以：
 
@@ -177,6 +180,27 @@ Scripting 没有 MapKit 的 `MapReader` / `proxy.convert(_:from:)`。现在的�
 
 反过来，`Location.reverseGeocode` 和 `Location.requestCurrent` 给的是 WGS-84，
 摆到地图上要先 `fromDeviceCoordinate`。
+
+### 2.15 一个脚本只能注册一个 Live Activity
+
+```ts
+// 错：注册两个，应用分不清运行中的活动该用哪个 builder，
+//     灵动岛上直接渲染成红色的「错误」
+LiveActivity.register("WlocSimulation", simulationBuilder);   // live_activity.tsx
+LiveActivity.register("WlocPairingPin", pairingBuilder);      // pairing_activity.tsx
+
+// 对：一个注册，状态里带字段分流
+const builder = (state) =>
+  state.kind === "pairing" ? pairingUI(state) : simulationUI(state);
+LiveActivity.register("WlocSimulation", builder);
+```
+
+文档里没写这条限制（`live_activity/zh.md` 只给了单个 `register` 的例子），
+是实测撞出来的。需要多种卡片样式时，用同一个注册 + 状态字段分流，
+别为每种样式各注册一个。
+
+现在配对 PIN 和定位模拟共用 `SimulationState`，靠 `kind` 区分。
+用不上的字段给中性值即可（见 `pages/PairingPage.tsx` 的 `pairingCardState`）。
 
 ---
 
