@@ -178,7 +178,13 @@ const builder: LiveActivityUIBuilder<SimulationState> = (state) => (
     content={<ContentView {...state} />}
     compactLeading={<CompactIcon {...state} />}
     compactTrailing={
-      <Text font="caption2" foregroundStyle={accent(state)}>
+      <Text
+        font="caption2"
+        foregroundStyle={accent(state)}
+        /* 收起态空间极窄，照 wloc-ios 的做法限宽加单行，长文本不至于撑变形 */
+        lineLimit={1}
+        frame={{ maxWidth: 62 }}
+      >
         {/* 设成「不显示」时给空串，系统会把这一侧收起来 */}
         {state.compactText}
       </Text>

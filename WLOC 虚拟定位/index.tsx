@@ -174,6 +174,21 @@ function App() {
     return () => clearTimeout(timer);
   }, []);
 
+  /*
+     启动时清掉遗留的实时活动卡片。
+
+     卡片的生命周期独立于脚本：脚本被划掉、会话异常中断时它都会留在灵动岛上，
+     内容还停在当时那一刻。没有未收尾记录就说明上次是正常结束的，那张卡片
+     纯属残留——留着会一直显示「正在模拟位置」，比没有卡片更误导。
+     有未收尾记录时反而要留着，它正是提醒你去恢复的那个东西。
+   */
+  useEffect(() => {
+    if (loadRecovery()) return;
+    void LiveActivity.endAllActivities({ dismissTimeInterval: 0 })
+      .then((ok) => debugLog("liveactivity", `清理遗留卡片：${ok}`))
+      .catch(() => undefined);
+  }, []);
+
   // 上次会话没正常收尾时主动问一句——设备那头可能还保持着模拟位置。
   useEffect(() => {
     const record = loadRecovery();
@@ -437,10 +452,11 @@ function App() {
 
     // 灵动岛样式改了要立刻推一次更新：卡片的内容只在 start/update 时重算，
     // 不主动推的话改完要等下一次坐标变动才生效，看起来就像「设置没用」。
-    const loc = activeLoc.value;
-    if (loc) {
-      void updateLiveActivity({ latitude: loc.latitude, longitude: loc.longitude }, next);
-    }
+    //
+    // 不要求有进行中的会话——卡片可能是上一次留下的，那时 activeLoc 已经是 null，
+    // 但岛上还挂着旧内容（之前就是这样：设置里改成了新值，岛上还是旧的）。
+    const loc = activeLoc.value ?? { latitude: coordLat.value, longitude: coordLng.value };
+    void updateLiveActivity({ latitude: loc.latitude, longitude: loc.longitude }, next);
   }
 
   function handleDeleteFav(id: string) {
