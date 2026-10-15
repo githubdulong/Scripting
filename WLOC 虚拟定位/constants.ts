@@ -41,7 +41,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   islandText: "status",
   islandCustomText: "",
   menuCorner: "topLeft",
-  defaultLayer: "imagery",
+  // 标准图层有地名和路名。卫星图好看但没字，第一眼认不出自己在哪——
+  // 用户反馈过「看这地图我都不知道我在哪里」。想要卫星图的在设置里改。
+  defaultLayer: "standard",
   jitterRadius: DEFAULT_JITTER_RADIUS,
   keepAlive: true,
   tunnelSource: "builtIn",
