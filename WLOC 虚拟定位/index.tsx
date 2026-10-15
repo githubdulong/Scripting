@@ -531,6 +531,7 @@ function App() {
       setStatusMsg(`模拟中 · ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
       markActive(lat, lng);
       fireToast("位置模拟已启动");
+      sessionStartedAt.current = Date.now();
       void startLiveActivity({ latitude: lat, longitude: lng });
       debugLog("ui", "会话已就绪", JSON.stringify(handle.peer));
     } catch (e) {
@@ -553,18 +554,26 @@ function App() {
 
   // ── 锁屏 / 灵动岛卡片 ──────────────────────────────────────────────
 
+  /** 会话起始时间，卡片上的计时器由系统按它自己走。 */
+  const sessionStartedAt = useRef(Date.now());
+
   function liveActivityState(point: Coordinate): SimulationState {
-    const movement =
-      movementKind === "joystick"
-        ? `摇杆 · ${modeInfo(selection.mode).label}`
-        : movementKind === "route"
-          ? `${modeInfo(selection.mode).label} ${(selection.speed.metresPerSecond * 3.6).toFixed(1)} km/h`
-          : "";
+    const info = modeInfo(selection.mode);
+    const moving = movementKind !== "none";
+    // 摇杆是手推的，没有「总长」可言；沿路线/手绘才有进度。
+    const walk = movementKind === "route" ? walker.value?.state : undefined;
     return {
       place: placeName || `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`,
-      movement,
       latitude: point.latitude,
       longitude: point.longitude,
+      mode: moving ? (movementKind === "joystick" ? `摇杆 · ${info.label}` : info.label) : "",
+      modeIcon: moving ? info.systemImage : "",
+      speedKmh: moving ? selection.speed.metresPerSecond * 3.6 : 0,
+      travelled: walk?.travelled ?? 0,
+      total: walk?.total ?? 0,
+      leg: (walk?.leg ?? 0) + 1,
+      paused: walk?.paused ?? false,
+      startedAt: sessionStartedAt.current,
     };
   }
 
@@ -705,6 +714,7 @@ function App() {
         updatedAt: now,
       });
       void acquireKeepAlive();
+      sessionStartedAt.current = Date.now();
       void startLiveActivity(start);
       return handle;
     } catch (e) {
@@ -797,6 +807,10 @@ function App() {
       }));
     if (usable.length === 0) throw new Error("没有找到可用路线");
 
+    // 路线换成别的来源了，手绘那几个编号点必须跟着清掉——
+    // 不然地图上会同时出现「上一次手绘的 ①②③④」和「这次规划的折线」，
+    // 看起来像是编号标错了位置。
+    applyDrawnPath([]);
     setRoutes(usable);
     setRouteIndex(0);
     setSelection(choice);
@@ -880,6 +894,7 @@ function App() {
     // GPX 按规范是 WGS-84，转成地图系后画在地图上才对得上。
     const path = track.coordinates.map((point) => fromDeviceCoordinate(point.latitude, point.longitude));
 
+    applyDrawnPath([]);
     setRoutes([{ coordinates: path, distance: 0, travelTime: 0 }]);
     setRouteIndex(0);
     await startWalking(path, choice, track.name ? `GPX · ${track.name}` : "GPX 轨迹");
