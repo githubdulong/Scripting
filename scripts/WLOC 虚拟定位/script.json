@@ -44,7 +44,7 @@
     "it": ""
   },
   "intentInputTypes": [],
-  "description": null,
+  "description": "用苹果官方开发者接口模拟本机定位。界面基于 BlackCCCat 的同名脚本",
   "iconImage": null,
   "icon": "location.fill.viewfinder",
   "runInApp": true,
