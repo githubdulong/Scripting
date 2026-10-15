@@ -20,6 +20,7 @@ import {
   Image,
   Button,
   AppEvents,
+  LiveActivity,
   type ScenePhase,
   type VirtualNode,
   type Color,
@@ -530,6 +531,7 @@ function App() {
       setStatusMsg(`模拟中 · ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
       markActive(lat, lng);
       fireToast("位置模拟已启动");
+      void startLiveActivity({ latitude: lat, longitude: lng });
       debugLog("ui", "会话已就绪", JSON.stringify(handle.peer));
     } catch (e) {
       setSessionState("idle");
@@ -566,12 +568,26 @@ function App() {
     };
   }
 
+  /**
+   * 起锁屏 / 灵动岛卡片。
+   *
+   * 起不来最常见的原因是系统里把实时活动关掉了（设置 → Scripting → 实时活动），
+   * 这种情况 start() 直接抛错，只记日志的话用户永远不知道为什么没卡片，
+   * 所以先问一次 areActivitiesEnabled 再明确提示。
+   */
   async function startLiveActivity(point: Coordinate) {
     try {
+      const allowed = await LiveActivity.areActivitiesEnabled();
+      debugLog("liveactivity", `areActivitiesEnabled=${allowed}`);
+      if (!allowed) {
+        fireToast("系统里关闭了实时活动，锁屏和灵动岛不会显示");
+        return;
+      }
       await liveActivity.value.start(liveActivityState(point));
+      debugLog("liveactivity", "卡片已启动");
     } catch (error) {
-      // 用户可能在系统设置里关掉了实时活动，不影响主流程。
-      debugLog("ui", "实时活动启动失败", describeError(error));
+      debugLog("liveactivity", "实时活动启动失败", describeError(error));
+      fireToast("锁屏卡片启动失败，不影响定位模拟");
     }
   }
 
@@ -943,6 +959,7 @@ function App() {
       await handle.update(target.latitude, target.longitude);
       setStatusMsg(`模拟中 · ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
       markActive(lat, lng);
+      void updateLiveActivity({ latitude: lat, longitude: lng });
       fireToast("坐标已更新");
     } catch (e) {
       showErrorAlert(`更新失败：${e instanceof Error ? e.message : String(e)}`);
