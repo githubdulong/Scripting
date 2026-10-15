@@ -65,6 +65,12 @@ python build-release.py
 npx -y -p typescript@5.6 tsc --noEmit -p tsconfig.json
 ```
 
+### 要求
+
+- **iOS 17+**，并开启开发者模式（设置 → 隐私与安全性 → 开发者模式）
+- iOS 18+ 才有「点中地点弹系统详情卡」；iOS 26+ 才有毛玻璃外观。两者缺失都只影响观感，不影响功能
+- 灵动岛需要 iPhone 14 Pro 及以后的机型；没有的话实时活动仍会出现在锁屏和通知中心
+
 ### 已知限制
 
 - **金融类应用改不了位置** —— 系统会给模拟位置打 `isSimulatedBySoftware` 标记，银行、保险等据此拒绝。这属于系统机制，本项目不绕过。
@@ -87,6 +93,7 @@ npx -y -p typescript@5.6 tsc --noEmit -p tsconfig.json
 
 - **[BlackCCCat](https://github.com/BlackCCCat/Scripting-Scripts)** —— 界面基座，WLOC 的 UI 沿用自其同名脚本
 - [wloc for iOS](https://github.com/ios151/wloc) —— 协议实现参考
+- [Roam Control](https://github.com/seanhowarthdev/Roam-Control) —— 同类的原生实现（MIT），协议层可对照着读
 - [idevice](https://github.com/jkcoxson/idevice)、[pymobiledevice3](https://github.com/doronz88/pymobiledevice3) —— 协议参考
 
 ## 声明

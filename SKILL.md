@@ -5,6 +5,21 @@
 
 ---
 
+## 0. 系统与设备要求
+
+| 要求 | 为什么 |
+|---|---|
+| **iOS 17+** | `Map` 组件本身是 iOS 17+；RemotePairing / RSD 这套开发者通道也是 iOS 17 起 |
+| **iOS 18+**（部分功能） | 点中 POI 弹系统详情卡（`featureSelectionAccessory`）、`Annotation` 的标记选中。低版本上这两项静默失效，不影响主流程 |
+| **iOS 26+**（外观） | 界面用了 `glassEffect`（Liquid Glass）。低版本上退化成普通背景，功能不受影响 |
+| **开发者模式必须开** | 设置 → 隐私与安全性 → 开发者模式。整条链路都走开发者通道 |
+| **灵动岛**（可选） | 需要带灵动岛的机型（iPhone 14 Pro 及以后）。没有的话实时活动仍会出现在锁屏和通知中心 |
+
+`script.json` 里没有写最低版本——Scripting 应用自己有下限，脚本不另外设。
+真正的硬门槛是 iOS 17 和开发者模式，其余都是「有更好、没有也能用」。
+
+---
+
 ## 1. 这个东西是怎么工作的
 
 ```
@@ -208,7 +223,7 @@ https://www.scripting.fun/import_scripts/?urls=<URL编码的JSON数组>
   打开地图 App 触发一次真实定位即可。
 - **步频 / 步数做不了**。`LocationSimulation` 只有
   `simulateLocationWithLatitude:longitude:`，步数属于 CMPedometer / HealthKit，
-  硬件层面隔离。原生 wloc-ios 同样没有。
+  硬件层面隔离。原生实现同样没有。
 - **代理工具提供的回环不被接受**。`openRSDTunnel` 读的是 Scripting 自身的反射
   状态，不认别人提供的。已反馈给应用作者。
 - **隧道开着时系统的地理编码可能出不去**。iOS 同时只允许一条 VPN，本机回环占着
@@ -217,19 +232,21 @@ https://www.scripting.fun/import_scripts/?urls=<URL编码的JSON数组>
 
 ---
 
-## 5. 和 wloc-ios（原生版）的关系
+## 5. 和原生版的关系
 
-协议层对照它实现，但那是 Swift 原生 App，有些事它能做我们做不到：
+同类的原生实现是 **[seanhowarthdev/Roam-Control](https://github.com/seanhowarthdev/Roam-Control)**（MIT，Swift）。
+协议层可以对照它读，但那是原生 App，有些事它能做我们做不到：
 
-| | wloc-ios | 这个脚本 |
+| | 原生（Roam Control） | 这个脚本 |
 |---|---|---|
-| 地图选点 | `MapReader` + `proxy.convert` | 手算跨度 + 线性插值 |
+| 地图选点 | `MapReader` + `proxy.convert(_:from:)` | 手算跨度 + 线性插值（见 2.13） |
 | 相机跟踪 | `onMapCameraChange(frequency: .continuous)` | 只有手势结束时回写 |
 | 后台 | Info.plist 的 background modes | `BackgroundKeeper` 保活队列 |
 | 实时活动 | ActivityKit 直接用 | `LiveActivity.register` + 独立文件 |
 
 **不要照搬它的后台方案**——两边机制完全不同，照搬没有意义。
-协议细节可以对照，UI 和系统集成要按 Scripting 文档来。
+协议细节可以对照（它和本项目都以 idevice 为真值），UI 和系统集成一律按
+Scripting 的文档与 dts 来。
 
 ---
 
@@ -237,7 +254,7 @@ https://www.scripting.fun/import_scripts/?urls=<URL编码的JSON数组>
 
 按价值排序，想动手可以从这里挑：
 
-1. **`index.tsx` 1700 多行**，该拆。对照 wloc-ios 的分法：
+1. **`index.tsx` 1700 多行**，该拆。可参考 Roam Control 的分法：
    `live_activity_controller`（卡片控制）、`path_simulation`（移动编排）、
    `route_planner`（路线）、`map_link`（从 coords.ts 拆出链接解析）。
 2. **2.7 那个 stale closure**，用 ref 存最新回调根治。

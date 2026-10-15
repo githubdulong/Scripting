@@ -17,6 +17,8 @@ import { WORKER_SOURCE_URL } from "../constants";
 /** 界面基座：本脚本的 UI 是在这份脚本上改出来的。 */
 const UI_BASE_URL = "https://github.com/BlackCCCat/Scripting-Scripts";
 const WLOC_URL = "https://github.com/ios151/wloc";
+/** 同类的原生实现，协议层可对照着读。 */
+const ROAM_CONTROL_URL = "https://github.com/seanhowarthdev/Roam-Control";
 const IDEVICE_URL = "https://github.com/jkcoxson/idevice";
 const PMD3_URL = "https://github.com/doronz88/pymobiledevice3";
 
@@ -105,6 +107,7 @@ export function AboutPage() {
         >
           {link("BlackCCCat（界面基座）", UI_BASE_URL, "paintbrush.pointed.fill")}
           {link("wloc for iOS", WLOC_URL, "location.fill")}
+          {link("Roam Control（原生实现）", ROAM_CONTROL_URL, "swift")}
           {link("idevice（协议参考）", IDEVICE_URL, "chevron.left.forwardslash.chevron.right")}
           {link("pymobiledevice3（协议参考）", PMD3_URL, "chevron.left.forwardslash.chevron.right")}
           {link("全球搜索 Worker", WORKER_SOURCE_URL, "globe")}

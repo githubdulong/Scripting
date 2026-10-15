@@ -183,7 +183,7 @@ const builder: LiveActivityUIBuilder<SimulationState> = (state) => (
       <Text
         font="caption2"
         foregroundStyle={accent(state)}
-        /* 收起态空间极窄，照 wloc-ios 的做法限宽加单行，长文本不至于撑变形 */
+        /* 收起态空间极窄，限宽加单行，长文本不至于把岛撑变形 */
         lineLimit={1}
         frame={{ maxWidth: 62 }}
       >
