@@ -13,6 +13,7 @@ import {
   NavigationLink,
   List,
   HStack,
+  VStack,
   Text,
   Button,
   Section,
@@ -82,7 +83,15 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
         */}
         <Section
           header={<Text>状态</Text>}
-          footer={status ? <Text foregroundStyle="tertiaryLabel">{status}</Text> : undefined}
+          footer={
+            <VStack alignment="leading" spacing={4}>
+              {status ? <Text foregroundStyle="secondaryLabel">{status}</Text> : null}
+              <Text foregroundStyle="tertiaryLabel">
+                日志只在内存里，记最近 600 条，脚本一关就没了，导出时会自动脱敏。
+                要清空或改用复制，去「连接状态」页。
+              </Text>
+            </VStack>
+          }
         >
           <Button action={() => void Navigation.present({ element: <DiagnosticsPage /> })}>
             <NavRow title="连接状态" systemImage="stethoscope" />
