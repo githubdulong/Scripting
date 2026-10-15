@@ -49,7 +49,6 @@
   "icon": "location.fill.viewfinder",
   "runInApp": true,
   "remoteResource": {
-    "url": "https://github.com/ios151/Scripting",
-    "autoUpdateInterval": 86400
+    "url": "https://raw.githubusercontent.com/ios151/Scripting/main/dist/WLOC.zip"
   }
 }
