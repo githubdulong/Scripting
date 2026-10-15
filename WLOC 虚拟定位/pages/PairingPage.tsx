@@ -438,7 +438,7 @@ export function PairingPage() {
           header={<Text font="caption" foregroundStyle="secondaryLabel">怎么拿到配对记录</Text>}
           footer={
             <Text font="caption2" foregroundStyle="tertiaryLabel">
-              文件里含私钥，等同于这台设备的调试授权，请勿外传。重启 iPhone 后系统侧的配对授权会失效，回到这一页重新配一次即可。
+              文件里含私钥，等同于这台设备的调试授权，请勿外传。更新系统后设备侧的配对授权会失效，回到这一页重新配一次即可。
             </Text>
           }
         >

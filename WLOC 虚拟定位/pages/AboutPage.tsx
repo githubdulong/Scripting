@@ -108,10 +108,10 @@ export function AboutPage() {
               </Text>
             </VStack>
             <VStack alignment="leading" spacing={2}>
-              <Text font="caption" fontWeight="semibold">重启后需要重新配对</Text>
+              <Text font="caption" fontWeight="semibold">更新系统后需要重新配对</Text>
               <Text font="caption2" foregroundStyle="secondaryLabel">
-                iOS 的配对授权是内存态，iPhone 重启后即失效。此时本地记录还在、握手也能过，
-                但建隧道会失败——重新配一次即可。
+                系统更新会让设备侧的配对授权失效。此时本地记录还在、握手也能过，
+                但建隧道会失败——回「配对」页重新配一次即可，不必重装脚本。
               </Text>
             </VStack>
             <VStack alignment="leading" spacing={2}>

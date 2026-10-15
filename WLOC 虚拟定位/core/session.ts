@@ -213,7 +213,7 @@ async function candidatePorts(endpoint: TunnelEndpoint, log: StatusReporter): Pr
   if (ports.length === 0) {
     throw new Error(
       `${endpoint.host} 的 ${PORT_RANGE_START}-${PORT_RANGE_END} 没有开放端口。\n` +
-        "请确认：① 已开启开发者模式；② 本机隧道已连接；③ 设备刚重启过的话需要重新配对。",
+        "请确认：① 已开启开发者模式；② 本机隧道已连接；③ 刚更新过系统的话需要重新配对。",
     );
   }
   return ports;
