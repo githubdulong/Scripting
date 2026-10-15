@@ -31,7 +31,7 @@ export type RsdServices = Map<string, RsdService>;
 
 /** 按 XPC 消息边界切分根流上的字节。 */
 class XpcChannelReader {
-  private buffer = new Uint8Array(0);
+  private buffer: Uint8Array = new Uint8Array(0);
 
   constructor(
     private readonly client: Http2Client,
@@ -39,6 +39,7 @@ class XpcChannelReader {
   ) {}
 
   private append(chunk: Uint8Array): void {
+    if (this.buffer.length + chunk.length > 4 * 1024 * 1024) throw new Error("RSD 消息过大");
     const merged = new Uint8Array(this.buffer.length + chunk.length);
     merged.set(this.buffer);
     merged.set(chunk, this.buffer.length);
@@ -118,7 +119,7 @@ export async function discoverServices(stream: ByteStream): Promise<RsdServices>
     if (!entry || typeof entry !== "object") continue;
     const info = entry as Record<string, unknown>;
     const port = Number(info.Port);
-    if (!Number.isFinite(port) || port <= 0) continue;
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) continue;
     const properties = (info.Properties as Record<string, unknown> | undefined) ?? {};
     result.set(name, {
       port,

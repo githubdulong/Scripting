@@ -152,6 +152,19 @@ export class RemotePairingClient {
 
   constructor(private readonly socket: RpPairingSocket) {}
 
+  /**
+   * 关闭连接。
+   *
+   * 先把密钥材料清零再关：这几个数组里是 pair-verify 协商出的共享密钥和
+   * 两个方向的流密钥，会话结束后没有任何理由继续留在内存里。
+   */
+  async close(): Promise<void> {
+    this.clientKey.fill(0);
+    this.serverKey.fill(0);
+    this.sharedSecret.fill(0);
+    await this.socket.close();
+  }
+
   /** pair-verify 协商出的原始共享密钥，同时也是隧道的 TLS-PSK。 */
   get preSharedKey(): Uint8Array {
     if (this.sharedSecret.length === 0) throw new Error("尚未完成 pair-verify");
@@ -220,6 +233,10 @@ export class RemotePairingClient {
     if (hasError(m2)) {
       throw new PairVerifyRejected(errorCode(m2), "设备拒绝了这次 pair-verify");
     }
+    // 除了看有没有 error，还要确认设备确实走到了 M2 这一步——
+    // 状态对不上说明双方的状态机已经错位，继续谈下去只会得到难懂的错误。
+    const m2State = m2.get(TLV8Type.State);
+    if (m2State?.length !== 1 || m2State[0] !== 2) throw new Error("pair-verify M2 状态无效");
     const devicePublicKey = m2.get(TLV8Type.PublicKey);
     if (!devicePublicKey || devicePublicKey.length !== 32) {
       throw new Error("设备未返回有效的临时公钥");
@@ -257,9 +274,12 @@ export class RemotePairingClient {
       await this.sendPairVerifyFailed();
       throw new PairVerifyRejected(
         errorCode(m4),
-        "设备不认这份配对记录。请在 wloc 里重新配对后再导出。",
+        "设备不认这份配对记录。请用「配对这台设备」重新配对，或从 wloc 重新导出本机记录。",
       );
     }
+
+    const m4State = m4.get(TLV8Type.State);
+    if (m4State?.length !== 1 || m4State[0] !== 4) throw new Error("pair-verify M4 状态无效");
 
     this.clientKey = await hkdfSha512(this.sharedSecret, EMPTY, CLIENT_ENCRYPT_INFO);
     this.serverKey = await hkdfSha512(this.sharedSecret, EMPTY, SERVER_ENCRYPT_INFO);

@@ -70,10 +70,11 @@ export function AboutPage() {
               </Text>
             </VStack>
             <VStack alignment="leading" spacing={2}>
-              <Text font="caption" fontWeight="semibold">配对记录要从 wloc 导入</Text>
+              <Text font="caption" fontWeight="semibold">首次配对要去系统设置输 PIN</Text>
               <Text font="caption2" foregroundStyle="secondaryLabel">
-                iOS 17+ 的本机配对要广播 mDNS 服务让系统发现，Scripting 没有这个接口，
-                所以脚本自己配不了对。
+                脚本会把本机广播成可配对主机，但 PIN 只能在
+                「设置 → 隐私与安全 → 开发者 → 配对」里输入，这一步系统不允许代劳。
+                也可以继续用 wloc 导出的记录。
               </Text>
             </VStack>
             <VStack alignment="leading" spacing={2}>

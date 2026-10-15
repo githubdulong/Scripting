@@ -62,12 +62,13 @@ export function decodeTLV8(bytes: Uint8Array): Map<number, Uint8Array> {
     const type = bytes[offset];
     const size = bytes[offset + 1];
     const end = offset + 2 + size;
-    if (end > bytes.length) break;
+    if (end > bytes.length) throw new Error("TLV8 数据截断");
     const list = chunks.get(type) ?? [];
     list.push(bytes.subarray(offset + 2, end));
     chunks.set(type, list);
     offset = end;
   }
+  if (offset !== bytes.length) throw new Error("TLV8 尾部截断");
 
   const result = new Map<number, Uint8Array>();
   for (const [type, list] of chunks) result.set(type, concat(...list));

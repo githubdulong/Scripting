@@ -13,9 +13,10 @@ import { DtxConnection } from "./dtx";
 import { LocationSimulation } from "./location";
 import { RemotePairingClient, RpPairingSocket, type PeerHandshakeInfo } from "./rppairing";
 import { connectTCP, probeTCP } from "./tcp";
+import { discoverPairingPort } from "./bonjour";
 import { probeTlsPsk } from "./tlsprobe";
 import { delay, withTimeout, type ByteStream } from "./stream";
-import type { PairingRecord } from "./pairing";
+import { loadPairing, type PairingRecord } from "./pairing";
 import type { TunnelSource } from "../types";
 
 const PORT_RANGE_START = 49152;
@@ -151,13 +152,34 @@ async function ensureLocalDevVPN(endpoint: TunnelEndpoint, log: StatusReporter):
   throw new Error("本机隧道迟迟没有生效。请先断开其他 VPN / 代理，再试一次。");
 }
 
-/** 缓存端口优先，其后是本次扫到的开放端口。 */
+/**
+ * 缓存端口优先，然后是 Bonjour 公告的端口，最后才是全段扫描。
+ *
+ * 扫 49152-49400 要来回几百次 TCP 探测，而 Bonjour 一次解析就能直接拿到端口，
+ * 还能用设备 IRK 校验公告确实来自这台设备。只是它依赖组播，不一定可用——
+ * 旧记录没有 IRK、或者组播被挡住时就只能退回扫描。
+ */
 async function candidatePorts(endpoint: TunnelEndpoint, log: StatusReporter): Promise<number[]> {
   const ports: number[] = [];
   const cached = Number(Storage.get<number>(PORT_CACHE_KEY) ?? 0);
   if (cached > 0) ports.push(cached);
 
   log("查找配对服务…");
+
+  const record = loadPairing();
+  if (record?.altIrk && record.altIrk.length === 16) {
+    try {
+      const announced = await discoverPairingPort(record.altIrk);
+      if (announced !== null && !ports.includes(announced)) {
+        debugLog("scan", `Bonjour 公告端口 ${announced}`);
+        ports.push(announced);
+      }
+    } catch (error) {
+      debugLog("scan", "Bonjour 发现失败，退回端口扫描", describeError(error));
+    }
+  }
+  if (ports.length > 0) return ports;
+
   debugLog("scan", `缓存端口 ${cached || "无"}，开始扫 ${PORT_RANGE_START}-${PORT_RANGE_END}`);
   for (let base = PORT_RANGE_START; base <= PORT_RANGE_END; base += PORT_SCAN_BATCH) {
     const batch: Promise<number | null>[] = [];
@@ -604,6 +626,27 @@ export async function startLocationSession(options: {
     keepAlive: options.keepAlive !== false,
     onFailure: options.onFailure,
   });
+}
+
+/**
+ * 独立验证一份配对记录能不能用。
+ *
+ * 用在「配对这台设备」之后：PIN 握手成功只说明 SRP 那一步对了，不代表设备
+ * 之后会认这份记录。先用它单独跑一次 pair-verify，过了才覆盖钥匙串里的旧记录——
+ * 配对途中任何一步出岔子都可能留下一份连不上的记录，直接覆盖会把本来能用的那份弄丢。
+ */
+export async function verifyPairingRecord(
+  record: PairingRecord,
+  endpoint: TunnelEndpoint,
+  log: StatusReporter = () => {},
+): Promise<void> {
+  await ensureTunnelReady(endpoint, log);
+  const session = await openPairingSession(endpoint, log);
+  try {
+    await session.client.validatePairing(record);
+  } finally {
+    await session.stream.close().catch(() => undefined);
+  }
 }
 
 /**

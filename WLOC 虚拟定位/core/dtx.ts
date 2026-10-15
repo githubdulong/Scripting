@@ -13,6 +13,8 @@ import { BufferedReader, withTimeout, writeAll, type ByteStream } from "./stream
 const MESSAGE_MAGIC = 0x1f3d5b79;
 const MESSAGE_HEADER_LEN = 32;
 const PAYLOAD_HEADER_LEN = 16;
+/** 单条消息的上限。字节全部来自设备，没有上限的话一个畸形长度就能把内存吃光。 */
+const MAX_MESSAGE_SIZE = 4 * 1024 * 1024;
 /** 负载头 msg_type：2 = 方法调用。 */
 const MSG_TYPE_METHOD_INVOCATION = 2;
 /** 辅助参数区头部的 buffer_size 提示值，与 idevice 保持一致。 */
@@ -123,8 +125,10 @@ export class DtxConnection {
   }
 
   async readMessage(): Promise<DtxMessage> {
-    let body = new Uint8Array(0);
+    let body: Uint8Array = new Uint8Array(0);
     let header: Uint8Array;
+    let nextFragment = 0;
+    let expectedFragments = 0;
 
     // 分片消息：第 0 片只有头，正文在后续片里，拼到最后一片为止。
     for (;;) {
@@ -137,6 +141,14 @@ export class DtxConnection {
       const fragmentId = readU16LE(header, 8);
       const fragmentCount = readU16LE(header, 10);
       const length = readU32LE(header, 12);
+      // 分片序号必须严格递增、片数前后一致，否则就是乱序或伪造的帧。
+      if (readU32LE(header, 4) !== MESSAGE_HEADER_LEN || fragmentCount === 0
+          || fragmentCount > 4096 || fragmentId !== nextFragment++
+          || (expectedFragments !== 0 && fragmentCount !== expectedFragments)
+          || length > MAX_MESSAGE_SIZE - body.length) {
+        throw new Error("DTX 消息头或长度无效");
+      }
+      expectedFragments = fragmentCount;
 
       if (fragmentCount > 1 && fragmentId === 0) continue;
 
@@ -150,12 +162,16 @@ export class DtxConnection {
     const expectsReply = readU32LE(header, 28) === 1;
 
     let payload: unknown;
-    if (body.length >= PAYLOAD_HEADER_LEN) {
+    if (body.length < PAYLOAD_HEADER_LEN) throw new Error("DTX 负载头不完整");
+    {
       const auxLength = readU32LE(body, 4);
       const totalLength = readU32LE(body, 8);
       const dataStart = PAYLOAD_HEADER_LEN + auxLength;
-      const dataLength = Math.max(0, totalLength - auxLength);
-      if (dataLength > 0 && dataStart + dataLength <= body.length) {
+      if (totalLength < auxLength || PAYLOAD_HEADER_LEN + totalLength !== body.length) {
+        throw new Error("DTX 负载长度无效");
+      }
+      const dataLength = totalLength - auxLength;
+      if (dataLength > 0) {
         payload = unarchive(body.subarray(dataStart, dataStart + dataLength));
       }
     }
@@ -177,7 +193,7 @@ export class DtxConnection {
    * 都可能是 1，只看 identifier 会把广播当成回包。
    */
   async waitForReply(identifier: number, timeoutMs = 15000): Promise<DtxMessage> {
-    return withTimeout(
+    try { return await withTimeout(
       (async () => {
         for (;;) {
           const message = await this.readMessage();
@@ -190,7 +206,11 @@ export class DtxConnection {
       })(),
       timeoutMs,
       "等待设备回应超时",
-    );
+    ); } catch (error) {
+      // A timed-out reader must not consume the next operation's reply.
+      await this.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   /** 在 0 号频道上申请一条服务频道，返回频道号。 */

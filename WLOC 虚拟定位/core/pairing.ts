@@ -2,7 +2,7 @@
 //
 // 记录由 wloc（iOS）在设备上自配对后生成，经「导出配对文件」得到
 // .mobiledevicepairing（plist，字段 identifier / private_key / public_key / alt_irk）。
-// 脚本侧无法自己配对——那一步要用 Bonjour 广播一个可配对主机，Scripting 没有这个接口。
+// 也可以由脚本自己配对（见 pair_setup.ts）：广播一个可配对主机，用 PIN 走 SRP。
 
 import { fromBase64, fromHex, toHex } from "./bytes";
 import { decodeBplist, isBplist, type PlistValue } from "./bplist";
@@ -14,8 +14,10 @@ export interface PairingRecord {
   privateKey: Uint8Array;
   /** Ed25519 公钥，32 字节；仅用于界面核对。 */
   publicKey: Uint8Array;
-  /** 设备身份解析密钥，脚本侧不用（没有 mDNS 要比对）。 */
+  /** 设备身份解析密钥，用来校验 Bonjour 服务公告里的 authTag 是不是这台设备。 */
   altIrk: Uint8Array;
+  /** 本机对外广播用的 IRK。和上面那个是两码事：一个认设备，一个认自己。 */
+  hostAltIrk?: Uint8Array;
   deviceName: string;
   deviceUDID: string;
 }
@@ -25,6 +27,7 @@ interface StoredRecord {
   privateKey: string;
   publicKey: string;
   altIrk: string;
+  hostAltIrk?: string;
   deviceName: string;
   deviceUDID: string;
 }
@@ -39,8 +42,14 @@ export function loadPairing(): PairingRecord | null {
 
   const legacy = readLegacy();
   if (legacy) {
-    savePairing(legacy);
-    return legacy;
+    // 迁移失败就把私钥清零再抛——半截状态下留着明文私钥没有意义。
+    try {
+      savePairing(legacy);
+      return legacy;
+    } catch (error) {
+      legacy.privateKey.fill(0);
+      throw error;
+    }
   }
   return null;
 }
@@ -51,10 +60,15 @@ export function savePairing(record: PairingRecord): void {
     privateKey: toHex(record.privateKey),
     publicKey: toHex(record.publicKey),
     altIrk: toHex(record.altIrk),
+    hostAltIrk: record.hostAltIrk ? toHex(record.hostAltIrk) : undefined,
     deviceName: record.deviceName,
     deviceUDID: record.deviceUDID,
   };
-  Keychain.set(KEYCHAIN_KEY, JSON.stringify(stored));
+  // 返回值必须看：写钥匙串会失败（锁屏、权限变更），静默忽略的话用户以为配好了，
+  // 下次启动才发现记录不在。
+  if (!Keychain.set(KEYCHAIN_KEY, JSON.stringify(stored))) {
+    throw new Error("无法保存配对记录，请检查钥匙串访问后重试");
+  }
 }
 
 export function deletePairing(): void {
@@ -73,6 +87,7 @@ function readFrom(key: string): PairingRecord | null {
       privateKey: fromHex(stored.privateKey),
       publicKey: fromHex(stored.publicKey ?? ""),
       altIrk: fromHex(stored.altIrk ?? ""),
+      hostAltIrk: stored.hostAltIrk ? fromHex(stored.hostAltIrk) : undefined,
       deviceName: stored.deviceName ?? "",
       deviceUDID: stored.deviceUDID ?? "",
     };

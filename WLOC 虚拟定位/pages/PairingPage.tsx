@@ -1,8 +1,12 @@
 // 配对记录管理页。
 //
-// 记录只能由 wloc（iOS）生成：那一步要用 Bonjour 广播一个可配对主机，
-// 让系统设置里出现「与 wloc 配对」，Scripting 没有这个接口。
-// 所以这里只负责导入 wloc 导出的 .mobiledevicepairing（或等价的 plist / JSON）。
+// 两条路：
+//   1. 「配对这台设备」——脚本自己起一个 TCP 监听、用 Bonjour 广播成可配对主机，
+//      系统设置里就会出现它，输入这里显示的 PIN 完成 SRP 握手。
+//   2. 「导入配对记录」——用 wloc 导出的 .mobiledevicepairing（或等价的 plist / JSON）。
+//
+// 新记录要先独立跑通一次 pair-verify 才会覆盖钥匙串里的旧记录：配对途中任何一步
+// 出错都可能留下一份连不上的记录，直接覆盖会把原本能用的那份弄丢。
 
 import {
   NavigationStack,
@@ -20,7 +24,8 @@ import {
 } from "scripting";
 import { toHex, utf8 } from "../core/bytes";
 import { deletePairing, loadPairing, parsePairingFile, savePairing, type PairingRecord } from "../core/pairing";
-import { probePairSetup } from "../core/session";
+import { createHostIdentity, createPIN, pairThisDevice } from "../core/pair_setup";
+import { verifyPairingRecord } from "../core/session";
 import { loadSettings } from "../utils/storage";
 
 export function PairingPage() {
@@ -30,32 +35,53 @@ export function PairingPage() {
   const [isError, setIsError] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [showPaste, setShowPaste] = useState(false);
-  const [probing, setProbing] = useState(false);
-  // 每次打开配对页都重读，保证显示的是设置页刚改过的值。
-  const [settings, setSettings] = useState(() => loadSettings());
+  const [pin, setPin] = useState("");
+  const [pairingInProgress, setPairingInProgress] = useState(false);
 
-  async function runPairSetupProbe() {
-    const current = loadSettings();
-    setSettings(current);
-    setProbing(true);
-    setStatus(
-      current.tunnelSource === "builtIn"
-        ? "将启用 Scripting 自身的 VPN…"
-        : `经代理工具连接 ${current.deviceHost}…`,
-    );
+  /**
+   * 在本机直接配对。
+   *
+   * 广播期间要切到「设置」去输 PIN，脚本会被切到后台——所以整段流程
+   * 需要后台保活撑着，否则一离开应用监听就断了。
+   */
+  async function startDevicePairing() {
+    setPairingInProgress(true);
     setIsError(false);
+    let lease = false;
     try {
-      const summary = await probePairSetup(
+      const host = await createHostIdentity();
+      const code = createPIN();
+      setPin(code);
+      setStatus("正在启动配对广播…");
+
+      try {
+        await BackgroundKeeper.keepAlive();
+        lease = true;
+      } catch {
+        // 没有后台保活也能试，只是切走后更容易被系统回收。
+      }
+
+      const record = await pairThisDevice(host, code, setStatus);
+
+      // 独立验证一次：这一步过了才算这份记录真的能用。
+      setStatus("验证新配对记录…");
+      const current = loadSettings();
+      await verifyPairingRecord(
+        record,
         { host: current.deviceHost, source: current.tunnelSource },
         setStatus,
       );
-      setStatus(summary);
-      setIsError(summary.includes("拒绝"));
+
+      savePairing(record);
+      setPairing(record);
+      setStatus("✓ 配对完成");
     } catch (error) {
-      setStatus(`探测失败：${error instanceof Error ? error.message : String(error)}`);
+      setStatus(`配对失败：${error instanceof Error ? error.message : String(error)}`);
       setIsError(true);
     } finally {
-      setProbing(false);
+      if (lease) await BackgroundKeeper.stopKeepAlive().catch(() => undefined);
+      setPin("");
+      setPairingInProgress(false);
     }
   }
 
@@ -145,33 +171,35 @@ export function PairingPage() {
         </Section>
 
         <Section
-          header={<Text font="caption" foregroundStyle="secondaryLabel">在本机直接配对（实验）</Text>}
+          header={<Text font="caption" foregroundStyle="secondaryLabel">配对这台设备</Text>}
           footer={
             <Text font="caption2" foregroundStyle="tertiaryLabel">
-              不经 wloc、直接在这台设备上发起配对。点下去后留意屏幕上的「信任」弹窗。
-              目前只验证设备允不允许，成功后才会继续实现完整的 SRP 握手。
+              不经 wloc，直接在这台设备上配对。点下去后会生成一个六位 PIN 并把本机
+              广播成可配对主机，然后前往
+              {"「设置 → 隐私与安全 → 开发者 → 配对」"}
+              ，在列表里选 Scripting WLOC 并输入 PIN。
               {"\n\n"}
-              隧道来源在「设置」里改。选「Scripting 自身」会启用它的 VPN，
-              从而顶掉正在运行的代理工具；选「代理工具提供」则不碰 VPN 开关。
+              离开应用期间靠后台保活维持广播，广播三分钟后自动结束。
+              新记录只有独立验证通过后才会覆盖已有记录。
             </Text>
           }
         >
-          <HStack frame={{ maxWidth: "infinity" }} spacing={8}>
-            <Image
-              systemName={settings.tunnelSource === "builtIn" ? "network.badge.shield.half.filled" : "app.connected.to.app.below.fill"}
-              foregroundStyle="secondaryLabel"
-              frame={{ width: 20 }}
-            />
-            <Text font="caption" foregroundStyle="secondaryLabel">
-              隧道来源：{settings.tunnelSource === "builtIn" ? "Scripting 自身" : "代理工具提供"}
-            </Text>
-            <Spacer />
-            <Text font="caption2" foregroundStyle="tertiaryLabel">{settings.deviceHost}</Text>
-          </HStack>
+          {pin ? (
+            <VStack alignment="leading" spacing={6} padding={{ vertical: 4 }}>
+              <Text font="caption" foregroundStyle="secondaryLabel">配对 PIN</Text>
+              <Text font="largeTitle" fontWeight="bold" fontDesign="monospaced" foregroundStyle="systemBlue">
+                {pin}
+              </Text>
+              <Text font="caption2" foregroundStyle="tertiaryLabel">
+                记下它，去设置里输入。离开这一页 PIN 就没了，要重新开始。
+              </Text>
+            </VStack>
+          ) : null}
           <Button
-            title={probing ? "探测中…" : "探测是否可直接配对"}
-            action={runPairSetupProbe}
-            disabled={probing}
+            title={pairingInProgress ? "等待在设置中输入 PIN…" : "配对这台设备"}
+            systemImage="personalhotspot"
+            action={startDevicePairing}
+            disabled={pairingInProgress}
           />
         </Section>
 

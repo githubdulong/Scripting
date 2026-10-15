@@ -280,17 +280,25 @@ export function decodeBplist(bytes: Uint8Array): ParsedBplist {
   const topObject = readUIntBE(bytes, trailer + 16, 8);
   const offsetTableOffset = readUIntBE(bytes, trailer + 24, 8);
 
-  if (offsetSize < 1 || refSize < 1 || count < 1) throw new Error("bplist 尾部字段无效");
+  if (offsetSize < 1 || offsetSize > 8 || refSize < 1 || refSize > 8
+      || !Number.isSafeInteger(count) || count < 1 || topObject >= count
+      || offsetTableOffset < 8 || offsetTableOffset > trailer
+      || count > Math.floor((trailer - offsetTableOffset) / offsetSize)) {
+    throw new Error("bplist 尾部字段无效");
+  }
 
   const offsets: number[] = [];
   for (let i = 0; i < count; i++) {
-    offsets.push(readUIntBE(bytes, offsetTableOffset + i * offsetSize, offsetSize));
+    const offset = readUIntBE(bytes, offsetTableOffset + i * offsetSize, offsetSize);
+    if (offset < 8 || offset >= offsetTableOffset) throw new Error("bplist 对象偏移无效");
+    offsets.push(offset);
   }
 
   const cache = new Map<number, PlistValue>();
 
-  function parseAt(index: number): PlistValue {
-    if (index >= count) throw new Error("bplist 对象引用越界");
+  // depth 用来挡住自引用的对象图——不设上限的话一个指回自己的数组就能让它无限递归。
+  function parseAt(index: number, depth = 0): PlistValue {
+    if (depth > 128 || !Number.isSafeInteger(index) || index < 0 || index >= count) throw new Error("bplist 对象引用越界");
     const cached = cache.get(index);
     if (cached !== undefined) return cached;
 
@@ -304,8 +312,20 @@ export function decodeBplist(bytes: Uint8Array): ParsedBplist {
     if (length === 0x0f && type !== 0x0 && type !== 0x1 && type !== 0x2 && type !== 0x8) {
       const intHead = bytes[offset];
       const intSize = 1 << (intHead & 0x0f);
+      if (intHead >> 4 !== 1 || intSize > 8 || offset + 1 + intSize > offsetTableOffset) throw new Error("bplist 长度无效");
       length = readUIntBE(bytes, offset + 1, intSize);
       offset += 1 + intSize;
+    }
+
+    const sizes: Record<number, number> = {
+      1: 1 << length, 2: 1 << length, 3: 8, 4: length, 5: length,
+      6: length * 2, 8: length + 1, 10: length * refSize,
+      12: length * refSize, 13: length * refSize * 2,
+    };
+    const size = sizes[type] ?? 0;
+    if (!Number.isSafeInteger(length) || !Number.isSafeInteger(size) || size < 0
+        || offset + size > offsetTableOffset || ((type === 1 || type === 2) && length > 3)) {
+      throw new Error("bplist 对象长度无效");
     }
 
     let result: PlistValue;
@@ -350,16 +370,17 @@ export function decodeBplist(bytes: Uint8Array): ParsedBplist {
       case 0xc: {
         const items: PlistValue[] = [];
         cache.set(index, items);
-        for (let i = 0; i < length; i++) items.push(parseAt(readUIntBE(bytes, offset + i * refSize, refSize)));
+        for (let i = 0; i < length; i++) items.push(parseAt(readUIntBE(bytes, offset + i * refSize, refSize), depth + 1));
         return items;
       }
       case 0xd: {
-        const dict: { [key: string]: PlistValue } = {};
+        // 用无原型对象：键名直接来自设备，普通字面量会被 __proto__ 一类的键污染。
+        const dict: { [key: string]: PlistValue } = Object.create(null);
         cache.set(index, dict);
         for (let i = 0; i < length; i++) {
           const keyRef = readUIntBE(bytes, offset + i * refSize, refSize);
           const valueRef = readUIntBE(bytes, offset + (length + i) * refSize, refSize);
-          dict[String(parseAt(keyRef))] = parseAt(valueRef);
+          dict[String(parseAt(keyRef, depth + 1))] = parseAt(valueRef, depth + 1);
         }
         return dict;
       }

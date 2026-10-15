@@ -90,10 +90,13 @@ export class Http2Client {
     const length = (header[0] << 16) | (header[1] << 8) | header[2];
     const type = header[3];
     const streamId = ((header[5] << 24) | (header[6] << 16) | (header[7] << 8) | header[8]) & 0x7fffffff;
+    if (length > 1048576) throw new Error("HTTP/2 帧过大");
     const body = length > 0 ? await this.reader.readExact(length) : new Uint8Array(0);
 
     if (type === FrameType.Data) {
-      const list = this.pending.get(streamId) ?? [];
+      const list = this.pending.get(streamId);
+      if (!list) return;
+      if (list.reduce((size, value) => size + value.length, 0) + body.length > 4 * 1024 * 1024) throw new Error("HTTP/2 缓冲过大");
       list.push(body);
       this.pending.set(streamId, list);
       return;

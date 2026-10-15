@@ -21,7 +21,7 @@ export class StreamClosedError extends Error {
 
 /** 带缓冲的读取器：协议层需要按长度精确取字节。 */
 export class BufferedReader {
-  private buffer = new Uint8Array(0);
+  private buffer: Uint8Array = new Uint8Array(0);
 
   constructor(private readonly stream: ByteStream) {}
 
