@@ -313,6 +313,31 @@ export async function collectDiagnostics(options: {
     items.push({ label: "本机隧道", value: describeError(error), ok: false });
   }
 
+  /*
+    当前占着 VPN 名额的是谁。
+
+    代理模式下这是最该先看的一行：回环由代理工具提供，它没在跑的话后面全白搭。
+    反过来在「Scripting 自身」模式下，这里显示着别家的名字就说明名额被占了，
+    openRSDTunnel 起不来——iOS 同时只允许一条 VPN 生效。
+  */
+  try {
+    const vpn = await VPN.getState();
+    debugLog("vpn", "系统 VPN 状态", JSON.stringify(vpn));
+    const who = vpn.selectedConfigurationName ?? vpn.providerBundleId ?? "（未知）";
+    items.push({
+      label: "当前 VPN",
+      value: vpn.status === "connected" ? `${who} · 已连接` : `${who} · ${vpn.status}`,
+      // 代理模式要它连着；自身模式下它连着反而说明名额被别人占了。
+      ok:
+        endpoint.source === "proxyApp"
+          ? vpn.status === "connected"
+          : null,
+    });
+    if (vpn.problem) items.push({ label: "VPN 报错", value: vpn.problem, ok: false });
+  } catch (error) {
+    items.push({ label: "当前 VPN", value: describeError(error), ok: null });
+  }
+
   log("探测配对端口…");
   const cached = Number(Storage.get<number>(PORT_CACHE_KEY) ?? 0);
   let reachablePort = 0;
