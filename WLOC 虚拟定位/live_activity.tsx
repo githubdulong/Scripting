@@ -27,6 +27,16 @@ import {
 import { RestoreLocationIntent } from "./app_intents";
 
 export interface SimulationState {
+  /**
+   * 这张卡片在干什么。
+   *
+   * 一个脚本只注册一个 Live Activity——注册两个的话应用分不清该用哪个 builder，
+   * 灵动岛上会直接显示「错误」。所以配对 PIN 和定位模拟共用这一个类型，
+   * 靠这个字段分流。
+   */
+  kind?: "simulation" | "pairing";
+  /** kind 为 pairing 时显示的六位 PIN */
+  pin?: string;
   /** 地点名；点空地且反查不到时为空字符串，此时卡片只显示坐标 */
   place: string;
   latitude: number;
@@ -175,7 +185,56 @@ function ContentView(state: SimulationState) {
   );
 }
 
-const builder: LiveActivityUIBuilder<SimulationState> = (state) => (
+/** 配对期间的卡片：只有一件事要说——PIN 是多少、去哪儿输。 */
+function pairingUI(state: SimulationState) {
+  const pin = state.pin ?? "";
+  return (
+    <LiveActivityUI
+      content={
+        <VStack
+          alignment="leading"
+          spacing={6}
+          padding={{ vertical: 12, leading: 14, trailing: 14 }}
+          activityBackgroundTint={{ light: "clear", dark: "clear" }}
+        >
+          <HStack spacing={10}>
+            <Image systemName="personalhotspot" foregroundStyle="systemBlue" font="title2" />
+            <VStack alignment="leading" spacing={2}>
+              <Text font="caption" foregroundStyle="secondaryLabel">配对 PIN</Text>
+              <Text font="title2" fontWeight="bold" fontDesign="monospaced">{pin}</Text>
+            </VStack>
+            <Spacer />
+          </HStack>
+          <Text font="caption2" foregroundStyle="secondaryLabel">
+            设置 → 隐私与安全性 → 开发者 → 配对 → Scripting WLOC
+          </Text>
+        </VStack>
+      }
+      compactLeading={<Image systemName="personalhotspot" foregroundStyle="systemBlue" />}
+      compactTrailing={
+        <Text font="caption2" fontDesign="monospaced" foregroundStyle="systemBlue">{pin}</Text>
+      }
+      minimal={<Image systemName="personalhotspot" foregroundStyle="systemBlue" />}
+    >
+      <LiveActivityUIExpandedLeading>
+        <Image systemName="personalhotspot" foregroundStyle="systemBlue" font="title2" />
+      </LiveActivityUIExpandedLeading>
+      <LiveActivityUIExpandedCenter>
+        <VStack alignment="leading" spacing={2}>
+          <Text font="caption2" foregroundStyle="secondaryLabel">配对 PIN</Text>
+          <Text font="title3" fontWeight="bold" fontDesign="monospaced">{pin}</Text>
+        </VStack>
+      </LiveActivityUIExpandedCenter>
+      <LiveActivityUIExpandedBottom>
+        <Text font="caption2" foregroundStyle="secondaryLabel">
+          设置 → 隐私与安全性 → 开发者 → 配对 → Scripting WLOC
+        </Text>
+      </LiveActivityUIExpandedBottom>
+    </LiveActivityUI>
+  );
+}
+
+const simulationUI: LiveActivityUIBuilder<SimulationState> = (state) => (
   <LiveActivityUI
     content={<ContentView {...state} />}
     compactLeading={<CompactIcon {...state} />}
@@ -256,5 +315,8 @@ const builder: LiveActivityUIBuilder<SimulationState> = (state) => (
     </LiveActivityUIExpandedBottom>
   </LiveActivityUI>
 );
+
+const builder: LiveActivityUIBuilder<SimulationState> = (state) =>
+  state.kind === "pairing" ? pairingUI(state) : simulationUI(state);
 
 export const SimulationLiveActivity = LiveActivity.register("WlocSimulation", builder);

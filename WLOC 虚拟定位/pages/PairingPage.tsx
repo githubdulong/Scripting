@@ -40,7 +40,7 @@ import {
   type PairingRecord,
 } from "../core/pairing";
 import { createHostIdentity, createPIN, pairThisDevice } from "../core/pair_setup";
-import { PairingPinLiveActivity } from "../pairing_activity";
+import { SimulationLiveActivity, type SimulationState } from "../live_activity";
 import { verifyPairingRecord } from "../core/session";
 import { loadSettings } from "../utils/storage";
 
@@ -54,8 +54,37 @@ export function PairingPage() {
   const [pin, setPin] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
   const [pairingInProgress, setPairingInProgress] = useState(false);
-  /** 配对期间显示 PIN 的那张卡片。 */
-  const pinActivity = useObservable(() => PairingPinLiveActivity());
+  /** 显示 PIN 的卡片。和定位模拟共用同一个注册，靠 kind 区分。 */
+  const pinActivity = useObservable(() => SimulationLiveActivity());
+
+  /**
+   * 配对卡片的状态。
+   *
+   * 和定位模拟共用一个 SimulationState——一个脚本只能注册一个 Live Activity，
+   * 注册两个的话灵动岛上会直接显示「错误」。定位相关的字段这里用不上，给中性值。
+   */
+  function pairingCardState(code: string): SimulationState {
+    return {
+      kind: "pairing",
+      pin: code,
+      place: "",
+      latitude: 0,
+      longitude: 0,
+      mode: "",
+      modeIcon: "",
+      speedKmh: 0,
+      travelled: 0,
+      total: 0,
+      leg: 1,
+      paused: false,
+      startedAt: Date.now(),
+      tint: "systemBlue",
+      compactIcon: "personalhotspot",
+      compactIconIsEmoji: false,
+      compactText: code,
+      restoreTint: "systemRed",
+    };
+  }
 
   /**
    * 在本机直接配对。
@@ -93,7 +122,7 @@ export function PairingPage() {
       // 把 PIN 挂到灵动岛上：输码要切到「设置」，那时本页已经看不见了。
       // 起不来不影响配对，只是得自己记住六位数。
       try {
-        await pinActivity.value.start({ pin: code, expiresAt: Date.now() + 180_000 });
+        await pinActivity.value.start(pairingCardState(code));
       } catch (error) {
         debugLog("liveactivity", "PIN 卡片启动失败", describeError(error));
       }
@@ -126,7 +155,7 @@ export function PairingPage() {
       if (lease) await BackgroundKeeper.stopKeepAlive().catch(() => undefined);
       // 配对结束就收掉卡片——PIN 已经没用了，留着是信息泄露也是干扰。
       await pinActivity.value
-        .end({ pin: "", expiresAt: Date.now() }, { dismissTimeInterval: 0 })
+        .end(pairingCardState(""), { dismissTimeInterval: 0 })
         .catch(() => undefined);
       setPin("");
       setPairingInProgress(false);
