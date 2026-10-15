@@ -416,6 +416,13 @@ function App() {
     saveSettings(next);
     layer.setValue(next.defaultLayer);
     debugLog("settings", "已保存", JSON.stringify(next));
+
+    // 灵动岛样式改了要立刻推一次更新：卡片的内容只在 start/update 时重算，
+    // 不主动推的话改完要等下一次坐标变动才生效，看起来就像「设置没用」。
+    const loc = activeLoc.value;
+    if (loc) {
+      void updateLiveActivity({ latitude: loc.latitude, longitude: loc.longitude }, next);
+    }
   }
 
   function handleDeleteFav(id: string) {
@@ -608,7 +615,12 @@ function App() {
   /** 会话起始时间，卡片上的计时器由系统按它自己走。 */
   const sessionStartedAt = useRef(Date.now());
 
-  function liveActivityState(point: Coordinate): SimulationState {
+  /**
+   * @param override 设置页刚改完、state 还没刷新时传进来的新设置。
+   *                 不传就用当前 settings。
+   */
+  function liveActivityState(point: Coordinate, override?: AppSettings): SimulationState {
+    const conf = override ?? settings;
     const info = modeInfo(selection.mode);
     const moving = movementKind !== "none";
     // 摇杆是手推的，没有「总长」可言；沿路线/手绘才有进度。
@@ -626,22 +638,22 @@ function App() {
       leg: (walk?.leg ?? 0) + 1,
       paused: walk?.paused ?? false,
       startedAt: sessionStartedAt.current,
-      tint: settings.islandTint,
-      compactIcon: islandIcon(moving ? info.systemImage : ""),
-      compactIconIsEmoji: settings.islandIcon === "emoji",
-      compactText: islandText(point, walk),
+      tint: conf.islandTint,
+      compactIcon: islandIcon(moving ? info.systemImage : "", conf),
+      compactIconIsEmoji: conf.islandIcon === "emoji",
+      compactText: islandText(point, walk, conf),
     };
   }
 
   /** 收起态图标：按设置决定用方式图标、固定箭头、Emoji 还是不显示。 */
-  function islandIcon(modeIcon: string): string {
-    switch (settings.islandIcon) {
+  function islandIcon(modeIcon: string, conf: AppSettings): string {
+    switch (conf.islandIcon) {
       case "mode":
         return modeIcon || "location.fill";
       case "fixed":
         return "location.fill";
       case "emoji":
-        return settings.islandEmoji.trim() || "📍";
+        return conf.islandEmoji.trim() || "📍";
       case "none":
         return "";
     }
@@ -654,9 +666,9 @@ function App() {
    * 选了某项但当前场景没有对应数据（比如定点模拟选「速度」）时返回空串，
    * 卡片那边会直接不画，不会留一截空白。
    */
-  function islandText(point: Coordinate, walk?: WalkState): string {
+  function islandText(point: Coordinate, walk: WalkState | undefined, conf: AppSettings): string {
     const ratio = walk && walk.total > 0 ? walk.travelled / walk.total : null;
-    switch (settings.islandText) {
+    switch (conf.islandText) {
       case "status":
         return movementKind === "none" ? "模拟中" : walk?.paused ? "已暂停" : "移动中";
       case "place":
@@ -670,7 +682,7 @@ function App() {
       case "progress":
         return ratio === null ? "" : `${Math.round(ratio * 100)}%`;
       case "custom":
-        return settings.islandCustomText.trim();
+        return conf.islandCustomText.trim();
       case "none":
         return "";
     }
@@ -699,9 +711,9 @@ function App() {
     }
   }
 
-  async function updateLiveActivity(point: Coordinate) {
+  async function updateLiveActivity(point: Coordinate, override?: AppSettings) {
     try {
-      await liveActivity.value.update(liveActivityState(point));
+      await liveActivity.value.update(liveActivityState(point, override));
     } catch {
       // 卡片已被用户划掉时更新会失败，忽略即可。
     }

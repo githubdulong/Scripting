@@ -15,7 +15,9 @@ import {
   Image,
   Spacer,
   TextField,
+  ColorPicker,
   Navigation,
+  type Color,
 } from "scripting";
 import { DiagnosticsPage } from "./DiagnosticsPage";
 import { AboutPage } from "./AboutPage";
@@ -50,6 +52,26 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
     const next = { ...current, ...patch };
     setCurrent(next);
     onChange(next);
+  }
+
+  /** 预览用的文字。没有进行中的会话，所以速度/进度一类给示例值。 */
+  function islandPreviewText(settings: AppSettings): string {
+    switch (settings.islandText) {
+      case "status":
+        return "模拟中";
+      case "place":
+        return "东交民巷35号";
+      case "coordinate":
+        return "39.905, 116.408";
+      case "speed":
+        return "5.0";
+      case "progress":
+        return "42%";
+      case "custom":
+        return settings.islandCustomText.trim() || "（未填）";
+      case "none":
+        return "";
+    }
   }
 
   /** 外链行：点一下用 Safari 打开。 */
@@ -180,14 +202,50 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
             </Text>
           }
         >
-          <HStack frame={{ maxWidth: "infinity" }} spacing={8} padding={{ vertical: 2 }}>
+          {/*
+            预览。
+            灵动岛只有开着模拟时才看得到，改完没法当场确认——尤其是 Emoji，
+            不先看一眼根本不知道填的字符能不能显示出来。
+          */}
+          <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
+            <Text font="caption" foregroundStyle="secondaryLabel">预览</Text>
+            <Spacer />
+            <HStack
+              spacing={6}
+              padding={{ vertical: 6, leading: 12, trailing: 12 }}
+              background={{ style: "black", shape: "capsule" }}
+            >
+              {current.islandIcon === "none" ? null : current.islandIcon === "emoji" ? (
+                <Text font="caption">{current.islandEmoji.trim() || "📍"}</Text>
+              ) : (
+                <Image
+                  systemName={current.islandIcon === "mode" ? "figure.walk" : "location.fill"}
+                  foregroundStyle={current.islandTint}
+                />
+              )}
+              <Text font="caption2" foregroundStyle={current.islandTint}>
+                {islandPreviewText(current)}
+              </Text>
+            </HStack>
+          </HStack>
+
+          {/* 原生取色器，支持自定义颜色和不透明度 */}
+          <ColorPicker
+            title="主色"
+            value={current.islandTint}
+            onChanged={(value: Color) => update({ islandTint: value })}
+            supportsOpacity={false}
+          />
+          <HStack frame={{ maxWidth: "infinity" }} spacing={8}>
+            <Text font="caption2" foregroundStyle="tertiaryLabel">常用</Text>
+            <Spacer />
             {ISLAND_TINT_OPTIONS.map((opt) => (
               <Button key={opt.id} action={() => update({ islandTint: opt.id })}>
                 <Image
                   systemName={
                     current.islandTint === opt.id ? "checkmark.circle.fill" : "circle.fill"
                   }
-                  foregroundStyle={opt.id === "label" ? "label" : opt.id}
+                  foregroundStyle={opt.id}
                   font="title3"
                 />
               </Button>
