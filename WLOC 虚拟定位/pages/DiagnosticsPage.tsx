@@ -20,12 +20,16 @@ import {
 import { collectDiagnostics, probeTunnelTls, type DiagnosticItem } from "../core/session";
 import { loadPairing } from "../core/pairing";
 import { loadSettings } from "../utils/storage";
+import { debugLogText, debugLogCount, clearDebugLog } from "../core/debug";
+import { exportDebugLog } from "../utils/logExport";
 
 export function DiagnosticsPage() {
   const dismiss = Navigation.useDismiss();
   const [items, setItems] = useState<DiagnosticItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
+  // 日志条数会随着后台动作变，进页面时取一次、复制/清空后再刷新就够了。
+  const [logCount, setLogCount] = useState(debugLogCount());
 
   async function run() {
     setBusy(true);
@@ -39,6 +43,7 @@ export function DiagnosticsPage() {
       });
       setItems(result);
       setStatus("");
+      setLogCount(debugLogCount());
     } catch (error) {
       setStatus(`诊断失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -80,6 +85,18 @@ export function DiagnosticsPage() {
       setStatus(`TLS 探测：${detail}`);
     } catch (error) {
       setStatus(`探测失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 导出实现见 `utils/logExport`——设置主页那个直达入口走的是同一条路。 */
+  async function exportLog() {
+    setBusy(true);
+    try {
+      setStatus(await exportDebugLog());
+    } catch (error) {
+      setStatus(`导出失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBusy(false);
     }
@@ -168,6 +185,55 @@ export function DiagnosticsPage() {
           />
         </Section>
 
+
+        {/*
+          运行日志。
+          反馈问题时最有用的东西。不连电脑也能拿到——缓冲区常开。
+          默认给「导出为文件」：几百条日志贴进聊天窗口谁也读不下去，
+          存成 txt 丢过去，对面想看哪段看哪段。
+        */}
+        <Section
+          header={<Text font="caption" foregroundStyle="secondaryLabel">运行日志</Text>}
+          footer={
+            <Text font="caption2" foregroundStyle="tertiaryLabel">
+              记录最近 600 条，满了自动丢最老的；脚本一关全没，不落盘。
+              导出和复制都会自动脱敏：坐标只保留 1 位小数、地名和自定义文本打码、
+              地址和设备标识只留前缀。密钥材料本来就只记长度。
+            </Text>
+          }
+        >
+          <Button
+            title={logCount > 0 ? `导出为文件（${logCount} 条）` : "暂无日志"}
+            systemImage="square.and.arrow.up"
+            disabled={logCount === 0 || busy}
+            action={() => void exportLog()}
+          />
+          <Button
+            title="复制到剪贴板"
+            systemImage="doc.on.doc"
+            disabled={logCount === 0}
+            action={() => {
+              Pasteboard.setString(debugLogText());
+              setStatus(`已复制 ${logCount} 条日志`);
+            }}
+          />
+          <Button
+            title="清空日志"
+            systemImage="trash"
+            role="destructive"
+            disabled={logCount === 0}
+            action={() => {
+              clearDebugLog();
+              setLogCount(0);
+              setStatus("日志已清空");
+            }}
+          />
+          <Button
+            title="刷新条数"
+            systemImage="arrow.clockwise"
+            action={() => setLogCount(debugLogCount())}
+          />
+        </Section>
 
         <Section
           header={<Text font="caption" foregroundStyle="secondaryLabel">连不上时先看这几条</Text>}

@@ -20,10 +20,10 @@ import {
   List,
   Section,
   DisclosureGroup,
-  Image,
   useState,
   useObservable,
   Navigation,
+  LiveActivity,
 } from "scripting";
 import { toHex, utf8 } from "../core/bytes";
 import { debugLog, describeError } from "../core/debug";
@@ -122,6 +122,10 @@ export function PairingPage() {
       // 把 PIN 挂到灵动岛上：输码要切到「设置」，那时本页已经看不见了。
       // 起不来不影响配对，只是得自己记住六位数。
       try {
+        // 同 index.tsx 的 startLiveActivity，两条都要：清场是因为卡片活得比脚本久，
+        // 换新实例是因为一个实例的 start() 只许调一次（再配一次就起不来了）。
+        await LiveActivity.endAllActivities({ dismissTimeInterval: 0 }).catch(() => undefined);
+        pinActivity.setValue(SimulationLiveActivity());
         await pinActivity.value.start(pairingCardState(code));
       } catch (error) {
         debugLog("liveactivity", "PIN 卡片启动失败", describeError(error));

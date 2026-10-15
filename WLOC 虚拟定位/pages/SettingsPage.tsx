@@ -1,44 +1,40 @@
-// 设置页：隧道来源、对端地址、默认地图图层、位置扰动、后台心跳。
+// 设置页：主页只留「随时可能改」的那几项，配一次就忘的收进子页。
 //
 // 选中即保存，不设「保存」按钮——这一页的保存键原先在列表最底部，
 // 加了新分节后更靠下，很容易改完没保存就把表单划走，改动静默丢失。
+//
+// 排序按「多久动一次」：出问题要找的状态排最前，外观次之，连接配置再次，
+// 高级和关于垫底。原先 12 个分节平铺 390 行，常调的「菜单位置」和一辈子不动的
+// 「会话心跳」并排站着，找什么都得滚一遍。
 
 import {
   useState,
   NavigationStack,
+  NavigationLink,
   List,
   HStack,
-  VStack,
   Text,
   Button,
   Section,
   Image,
   Spacer,
-  TextField,
-  ColorPicker,
-  DisclosureGroup,
   Navigation,
-  type Color,
 } from "scripting";
 import { DiagnosticsPage } from "./DiagnosticsPage";
 import { AboutPage } from "./AboutPage";
-import type { AppSettings, MapLayerId, TunnelSource } from "../types";
+import { SettingsCardStyle } from "./SettingsCardStyle";
+import { SettingsConnection } from "./SettingsConnection";
+import { SettingsAdvanced } from "./SettingsAdvanced";
+import { OptionGroup, NavRow } from "./SettingsControls";
+import { exportDebugLog } from "../utils/logExport";
+import { debugLogCount } from "../core/debug";
+import type { AppSettings } from "../types";
 import {
-  DEFAULT_DEVICE_HOST,
   DEFAULT_SETTINGS,
-  CARD_TITLE_OPTIONS,
-  ISLAND_ICON_OPTIONS,
-  ISLAND_TEXT_OPTIONS,
-  ISLAND_TINT_OPTIONS,
-  JITTER_OPTIONS,
-  LOOPBACK_MODULE_LOON,
-  LOOPBACK_MODULE_SURGE,
   MAP_LAYER_OPTIONS,
   MENU_CORNER_OPTIONS,
   TUNNEL_SOURCE_OPTIONS,
-  WORKER_SOURCE_URL,
 } from "../constants";
-import { DEFAULT_GLOBAL_ENDPOINT } from "../api/searchApi";
 
 interface SettingsPageProps {
   settings: AppSettings;
@@ -49,11 +45,8 @@ interface SettingsPageProps {
 
 export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) {
   const [current, setCurrent] = useState<AppSettings>(settings);
-  // 这两组展开后很占地方，默认收起
-  const [tintOpen, setTintOpen] = useState(false);
-  const [moduleOpen, setModuleOpen] = useState(false);
-  /** 复制成功后的一行提示，显示在模块那一节的 footer 里。 */
-  const [copied, setCopied] = useState("");
+  /** 导出日志后的一行提示。 */
+  const [status, setStatus] = useState("");
 
   function update(patch: Partial<AppSettings>) {
     const next = { ...current, ...patch };
@@ -61,67 +54,17 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
     onChange(next);
   }
 
-  /** 预览用的文字。没有进行中的会话，所以速度/进度一类给示例值。 */
-  function islandPreviewText(settings: AppSettings): string {
-    switch (settings.islandText) {
-      case "status":
-        return "模拟中";
-      case "place":
-        return "东交民巷35号";
-      case "coordinate":
-        return "39.905, 116.408";
-      case "speed":
-        return "5.0";
-      case "progress":
-        return "42%";
-      case "custom":
-        return settings.islandCustomText.trim() || "（未填）";
-      case "none":
-        return "";
-    }
-  }
-
-  /** 外链行：点一下用 Safari 打开。 */
-  function link(title: string, url: string, systemImage: string) {
-    return (
-      <Button action={() => void Safari.openURL(url)}>
-        <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
-          <Image systemName={systemImage} foregroundStyle="systemBlue" frame={{ width: 22 }} />
-          <Text foregroundStyle="label">{title}</Text>
-          <Spacer />
-          <Image systemName="arrow.up.right.square" foregroundStyle="tertiaryLabel" font="caption" />
-        </HStack>
-      </Button>
-    );
-  }
-
-  /**
-   * 复制行：点一下把地址放进剪贴板。
-   *
-   * 模块地址是给代理工具用的，在 Safari 里打开只会看到一堆配置文本，
-   * 还得自己全选复制——直接复制才是想要的那个动作。
-   */
-  function copyRow(title: string, url: string, systemImage: string) {
-    return (
-      <Button
-        action={() => {
-          Pasteboard.setString(url);
-          setCopied(`✓ 已复制 ${title} 的地址，去代理工具里新建模块粘贴即可`);
-        }}
-      >
-        <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
-          <Image systemName={systemImage} foregroundStyle="systemBlue" frame={{ width: 22 }} />
-          <Text foregroundStyle="label">{title}</Text>
-          <Spacer />
-          <Image systemName="doc.on.doc" foregroundStyle="tertiaryLabel" font="caption" />
-        </HStack>
-      </Button>
-    );
-  }
-
   function handleReset() {
     setCurrent(DEFAULT_SETTINGS);
     onChange(DEFAULT_SETTINGS);
+  }
+
+  async function handleExport() {
+    try {
+      setStatus(await exportDebugLog());
+    } catch (error) {
+      setStatus(`导出失败：${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   return (
@@ -132,19 +75,59 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
         listStyle="insetGroup"
         toolbar={{ confirmationAction: <Button title="完成" action={onDone} /> }}
       >
-        <Section header={<Text>设备</Text>}>
+        {/*
+          状态。
+          连不上是最常见的问题，排查要的两样东西都摆在第一屏——
+          导出日志原先埋在「连接状态 → 运行日志 → 导出」三层底下，反馈时没人找得到。
+        */}
+        <Section
+          header={<Text>状态</Text>}
+          footer={status ? <Text foregroundStyle="tertiaryLabel">{status}</Text> : undefined}
+        >
           <Button action={() => void Navigation.present({ element: <DiagnosticsPage /> })}>
+            <NavRow title="连接状态" systemImage="stethoscope" />
+          </Button>
+          <Button action={() => void handleExport()}>
             <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
-              <Image systemName="stethoscope" foregroundStyle="systemBlue" frame={{ width: 22 }} />
-              <Text foregroundStyle="label">连接状态</Text>
+              <Image systemName="square.and.arrow.up" foregroundStyle="systemBlue" frame={{ width: 22 }} />
+              <Text foregroundStyle="label">导出日志</Text>
               <Spacer />
-              <Image systemName="chevron.right" foregroundStyle="tertiaryLabel" font="caption" />
+              <Text font="caption" foregroundStyle="secondaryLabel">{debugLogCount()} 条</Text>
             </HStack>
           </Button>
         </Section>
 
+        {/* 外观。这三项是真会反复调的，留在主页一步到位。 */}
         <Section
-          header={<Text>隧道来源</Text>}
+          header={<Text>外观</Text>}
+          footer={
+            <Text foregroundStyle="tertiaryLabel">
+              菜单位置按惯用手选，切换后立即生效。右上角是地图自带控件
+              （定位、3D 视角、指南针）的固定位置，让给它们。
+            </Text>
+          }
+        >
+          <OptionGroup
+            title="地图图层"
+            options={MAP_LAYER_OPTIONS}
+            selected={current.defaultLayer}
+            onPick={(id) => update({ defaultLayer: id })}
+          />
+          <OptionGroup
+            title="菜单位置"
+            options={MENU_CORNER_OPTIONS}
+            selected={current.menuCorner}
+            onPick={(id) => update({ menuCorner: id })}
+          />
+          <NavigationLink
+            destination={<SettingsCardStyle current={current} update={update} />}
+          >
+            <NavRow title="锁屏与灵动岛" systemImage="platter.filled.top.iphone" />
+          </NavigationLink>
+        </Section>
+
+        <Section
+          header={<Text>连接</Text>}
           footer={
             <Text foregroundStyle="tertiaryLabel">
               改定位要通过系统的开发者通道下发坐标，而那个通道只听本机地址，所以需要一条把流量在设备内部闭合的回环隧道。
@@ -152,402 +135,30 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
             </Text>
           }
         >
-          {TUNNEL_SOURCE_OPTIONS.map((opt) => (
-            <Button key={opt.id} action={() => update({ tunnelSource: opt.id })}>
-              <HStack frame={{ maxWidth: "infinity" }} spacing={10} alignment="top">
-                <Image
-                  systemName={
-                    opt.id === "builtIn"
-                      ? "network.badge.shield.half.filled"
-                      : "app.connected.to.app.below.fill"
-                  }
-                  foregroundStyle={current.tunnelSource === opt.id ? "systemBlue" : "secondaryLabel"}
-                  frame={{ width: 22 }}
-                />
-                <VStack alignment="leading" spacing={2}>
-                  <Text foregroundStyle="label">{opt.label}</Text>
-                  <Text font="caption2" foregroundStyle="secondaryLabel">{opt.detail}</Text>
-                </VStack>
-                <Spacer />
-                {current.tunnelSource === opt.id ? (
-                  <Image systemName="checkmark" foregroundStyle="systemBlue" font="body" />
-                ) : null}
-              </HStack>
-            </Button>
-          ))}
-        </Section>
-
-        <Section
-          header={<Text>对端地址</Text>}
-          footer={
-            <Text foregroundStyle="tertiaryLabel">
-              设备配对服务所在的回环地址，需与隧道提供方的配置一致。
-              默认 {DEFAULT_DEVICE_HOST}，与 LocalDevVPN 的约定相同；
-              代理工具这边把 tun 的 loopback-address 配成同一个值即可。
-            </Text>
-          }
-        >
-          <TextField
-            title=""
-            value={current.deviceHost}
-            onChanged={(value: string) => update({ deviceHost: value })}
-            prompt={DEFAULT_DEVICE_HOST}
-            keyboardType="numbersAndPunctuation"
+          <OptionGroup
+            title="隧道来源"
+            options={TUNNEL_SOURCE_OPTIONS.map((opt) => ({
+              ...opt,
+              systemImage:
+                opt.id === "builtIn"
+                  ? "network.badge.shield.half.filled"
+                  : "app.connected.to.app.below.fill",
+            }))}
+            selected={current.tunnelSource}
+            onPick={(id) => update({ tunnelSource: id })}
           />
-        </Section>
-
-        {/*
-          代理工具侧的回环配置。
-          自己照着文档写一遍很容易漏掉 IPv6 那一项（关蜂窝后接口没地址会被判成
-          无网络，隧道直接暂停），所以直接给现成模块。
-        */}
-        <Section
-          header={<Text>代理工具的回环模块</Text>}
-          footer={
-            <Text foregroundStyle="tertiaryLabel">
-              隧道来源选「代理工具提供」时，需要让代理工具把 {DEFAULT_DEVICE_HOST} 的流量
-              反射回本机。上面两个是现成模块，装上即可。
-              {"\n\n"}
-              Egern 也支持同样的能力，写法见它自己的文档。
-              Quantumult X 据称也可以，但具体写法未经验证，这里不提供模块。
-              {"\n\n"}
-              自己写的话要点有两个：把 {DEFAULT_DEVICE_HOST}/32 划进 TUN 的包含路由，
-              再把该地址设为 reflect（回环到本机）。
-              {copied ? `
-
-${copied}` : ""}
-            </Text>
-          }
-        >
-          <DisclosureGroup
-            title="模块地址"
-            isExpanded={moduleOpen}
-            onChanged={(value: boolean) => setModuleOpen(value)}
-          >
-            {copyRow("Loon 模块（.lpx）", LOOPBACK_MODULE_LOON, "l.circle")}
-            {copyRow("Surge 模块（.sgmodule）", LOOPBACK_MODULE_SURGE, "s.circle")}
-          </DisclosureGroup>
-        </Section>
-
-        <Section
-          header={<Text>锁屏卡片标题</Text>}
-          footer={
-            <Text foregroundStyle="tertiaryLabel">
-              卡片最上面那行大字。坐标始终显示在它下面，所以这里选「坐标」时
-              只会留一行，不会重复。
-            </Text>
-          }
-        >
-          {CARD_TITLE_OPTIONS.map((opt) => (
-            <Button
-              key={`card-${opt.id}`}
-              buttonStyle="borderless"
-              action={() => update({ cardTitle: opt.id })}
-            >
-              <HStack frame={{ maxWidth: "infinity" }} spacing={10} alignment="top">
-                <Image
-                  systemName={current.cardTitle === opt.id ? "largecircle.fill.circle" : "circle"}
-                  foregroundStyle={current.cardTitle === opt.id ? "systemBlue" : "secondaryLabel"}
-                  frame={{ width: 22 }}
-                />
-                <VStack alignment="leading" spacing={2}>
-                  <Text foregroundStyle="label">{opt.label}</Text>
-                  <Text font="caption2" foregroundStyle="secondaryLabel">{opt.detail}</Text>
-                </VStack>
-                <Spacer />
-              </HStack>
-            </Button>
-          ))}
-          {current.cardTitle === "custom" ? (
-            <TextField
-              title=""
-              value={current.cardCustomTitle}
-              onChanged={(value: string) => update({ cardCustomTitle: value })}
-              prompt="想显示的标题"
-            />
-          ) : null}
-
-          {/* 卡片底部那个「恢复真实位置」按钮的颜色 */}
-          <ColorPicker
-            title="恢复按钮颜色"
-            value={current.restoreTint}
-            onChanged={(value: Color) => update({ restoreTint: value })}
-            supportsOpacity={false}
-          />
-        </Section>
-
-        {/*
-          灵动岛收起态只有很窄一条，装不下几个字，所以这里只调「图标 + 一句话」。
-          锁屏展开后的完整卡片内容是固定的，不跟着这里变。
-        */}
-        <Section
-          header={<Text>灵动岛样式</Text>}
-          footer={
-            <Text foregroundStyle="tertiaryLabel">
-              只影响灵动岛收起时那一条。暂停移动时颜色会强制转橙——
-              一眼看出状态比好看要紧。
-            </Text>
-          }
-        >
-          {/*
-            预览。
-            灵动岛只有开着模拟时才看得到，改完没法当场确认——尤其是 Emoji，
-            不先看一眼根本不知道填的字符能不能显示出来。
-          */}
-          <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
-            <Text font="caption" foregroundStyle="secondaryLabel">预览</Text>
-            <Spacer />
-            <HStack
-              spacing={6}
-              padding={{ vertical: 6, leading: 12, trailing: 12 }}
-              background={{ style: "black", shape: "capsule" }}
-            >
-              {current.islandIcon === "none" ? null : current.islandIcon === "emoji" ? (
-                <Text font="caption">{current.islandEmoji.trim() || "📍"}</Text>
-              ) : (
-                <Image
-                  systemName={current.islandIcon === "mode" ? "figure.walk" : "location.fill"}
-                  foregroundStyle={current.islandTint}
-                />
-              )}
-              <Text font="caption2" foregroundStyle={current.islandTint}>
-                {islandPreviewText(current)}
-              </Text>
-            </HStack>
-          </HStack>
-
-          {/* 原生取色器，支持自定义颜色和不透明度 */}
-          <ColorPicker
-            title="主色"
-            value={current.islandTint}
-            onChanged={(value: Color) => update({ islandTint: value })}
-            supportsOpacity={false}
-          />
-          <DisclosureGroup
-            title="常用颜色"
-            isExpanded={tintOpen}
-            onChanged={(value: boolean) => setTintOpen(value)}
-          >
-          <HStack frame={{ maxWidth: "infinity" }} spacing={8}>
-            <Spacer />
-            {ISLAND_TINT_OPTIONS.map((opt) => (
-              // 必须 borderless：List 的一行默认整行是一个点击目标，
-              // 同一行里放多个 Button 的话只有最后一个会响应（之前就是只能选到白色）。
-              <Button
-                key={`tint-${opt.id}`}
-                buttonStyle="borderless"
-                action={() => update({ islandTint: opt.id })}
-              >
-                <Image
-                  systemName={
-                    current.islandTint === opt.id ? "checkmark.circle.fill" : "circle.fill"
-                  }
-                  foregroundStyle={opt.id}
-                  font="title3"
-                />
-              </Button>
-            ))}
-            <Spacer />
-          </HStack>
-          </DisclosureGroup>
-
-          {ISLAND_ICON_OPTIONS.map((opt) => (
-            // 和下面的文字选项同处一个 Section，两边都有 "none"，key 要加前缀
-            <Button key={`icon-${opt.id}`} action={() => update({ islandIcon: opt.id })}>
-              <HStack frame={{ maxWidth: "infinity" }} spacing={10} alignment="top">
-                <Image
-                  systemName={current.islandIcon === opt.id ? "largecircle.fill.circle" : "circle"}
-                  foregroundStyle={current.islandIcon === opt.id ? "systemBlue" : "secondaryLabel"}
-                  frame={{ width: 22 }}
-                />
-                <VStack alignment="leading" spacing={2}>
-                  <Text foregroundStyle="label">{opt.label}</Text>
-                  <Text font="caption2" foregroundStyle="secondaryLabel">{opt.detail}</Text>
-                </VStack>
-                <Spacer />
-              </HStack>
-            </Button>
-          ))}
-          {current.islandIcon === "emoji" ? (
-            <TextField
-              title=""
-              value={current.islandEmoji}
-              onChanged={(value: string) => update({ islandEmoji: value })}
-              prompt="📍 任意 Emoji 或文字"
-            />
-          ) : null}
-
-          {ISLAND_TEXT_OPTIONS.map((opt) => (
-            <Button key={`text-${opt.id}`} action={() => update({ islandText: opt.id })}>
-              <HStack frame={{ maxWidth: "infinity" }} spacing={10} alignment="top">
-                <Image
-                  systemName={current.islandText === opt.id ? "largecircle.fill.circle" : "circle"}
-                  foregroundStyle={current.islandText === opt.id ? "systemBlue" : "secondaryLabel"}
-                  frame={{ width: 22 }}
-                />
-                <VStack alignment="leading" spacing={2}>
-                  <Text foregroundStyle="label">{opt.label}</Text>
-                  <Text font="caption2" foregroundStyle="secondaryLabel">{opt.detail}</Text>
-                </VStack>
-                <Spacer />
-              </HStack>
-            </Button>
-          ))}
-          {current.islandText === "custom" ? (
-            <TextField
-              title=""
-              value={current.islandCustomText}
-              onChanged={(value: string) => update({ islandCustomText: value })}
-              prompt="想显示的文字，短一点"
-            />
-          ) : null}
-        </Section>
-
-        <Section
-          header={<Text>菜单位置</Text>}
-          footer={
-            <Text foregroundStyle="tertiaryLabel">
-              首页那组功能按钮落在哪个角，按惯用手选。切换后立即生效。
-              右上角是地图自带控件（定位、3D 视角、指南针）的固定位置，让给它们。
-            </Text>
-          }
-        >
-          {MENU_CORNER_OPTIONS.map((opt) => (
-            <Button key={opt.id} action={() => update({ menuCorner: opt.id })}>
-              <HStack frame={{ maxWidth: "infinity" }} spacing={10} alignment="top">
-                <Image
-                  systemName={opt.systemImage}
-                  foregroundStyle={current.menuCorner === opt.id ? "systemBlue" : "secondaryLabel"}
-                  frame={{ width: 22 }}
-                />
-                <VStack alignment="leading" spacing={2}>
-                  <Text foregroundStyle="label">{opt.label}</Text>
-                  <Text font="caption2" foregroundStyle="secondaryLabel">{opt.detail}</Text>
-                </VStack>
-                <Spacer />
-                {current.menuCorner === opt.id ? (
-                  <Image systemName="checkmark" foregroundStyle="systemBlue" font="body" />
-                ) : null}
-              </HStack>
-            </Button>
-          ))}
-        </Section>
-
-        <Section header={<Text>默认地图图层</Text>}>
-          {MAP_LAYER_OPTIONS.map((opt) => (
-            <Button key={opt.id} action={() => update({ defaultLayer: opt.id as MapLayerId })}>
-              <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
-                <Image
-                  systemName={
-                    opt.id === "imagery"
-                      ? "globe.europe.africa.fill"
-                      : opt.id === "hybrid"
-                        ? "map.fill"
-                        : "map"
-                  }
-                  foregroundStyle={current.defaultLayer === opt.id ? "systemBlue" : "secondaryLabel"}
-                  frame={{ width: 22 }}
-                />
-                <Text foregroundStyle="label">{opt.label}</Text>
-                <Spacer />
-                {current.defaultLayer === opt.id ? (
-                  <Image systemName="checkmark" foregroundStyle="systemBlue" font="body" />
-                ) : null}
-              </HStack>
-            </Button>
-          ))}
-        </Section>
-
-        <Section
-          header={<Text>位置扰动</Text>}
-          footer={
-            <Text foregroundStyle="tertiaryLabel">
-              开启后坐标会在该半径内随机漂移，让静止时的轨迹更接近真机。需要精确落点时保持关闭。
-            </Text>
-          }
-        >
-          {JITTER_OPTIONS.map((radius) => (
-            <Button key={String(radius)} action={() => update({ jitterRadius: radius })}>
-              <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
-                <Image
-                  systemName={radius === 0 ? "scope" : "dot.radiowaves.left.and.right"}
-                  foregroundStyle={current.jitterRadius === radius ? "systemBlue" : "secondaryLabel"}
-                  frame={{ width: 22 }}
-                />
-                <Text foregroundStyle="label">{radius === 0 ? "关闭" : `${radius} 米`}</Text>
-                <Spacer />
-                {current.jitterRadius === radius ? (
-                  <Image systemName="checkmark" foregroundStyle="systemBlue" font="body" />
-                ) : null}
-              </HStack>
-            </Button>
-          ))}
-        </Section>
-
-        <Section
-          header={<Text>会话心跳</Text>}
-          footer={
-            <Text foregroundStyle="tertiaryLabel">
-              模拟位置靠一条到设备的活连接维持，心跳每 4 秒重发一次坐标。关掉可能会让设备在一段时间后自行恢复真实定位。
-            </Text>
-          }
-        >
-          <Button action={() => update({ keepAlive: !current.keepAlive })}>
-            <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
-              <Image
-                systemName={current.keepAlive ? "checkmark.circle.fill" : "circle"}
-                foregroundStyle={current.keepAlive ? "systemGreen" : "secondaryLabel"}
-                frame={{ width: 22 }}
-              />
-              <Text foregroundStyle="label">持续下发坐标</Text>
-              <Spacer />
-            </HStack>
-          </Button>
-        </Section>
-
-        <Section
-          header={<Text>全球搜索服务</Text>}
-          footer={
-            <Text foregroundStyle="tertiaryLabel">
-              搜索境外地点（搜索页的「全球」开关）默认走内置服务，上方灰字即默认地址。
-              若搜索频繁失败或请求受限，可照下方链接里的说明自己部署 Worker，
-              再把它的 /api/search 地址填在这里；留空即恢复内置默认。
-            </Text>
-          }
-        >
-          <TextField
-            title=""
-            value={current.globalSearchEndpoint}
-            onChanged={(value: string) => update({ globalSearchEndpoint: value })}
-            prompt={DEFAULT_GLOBAL_ENDPOINT}
-            keyboardType="URL"
-          />
-          <Button
-            title="Worker 源码与部署教程"
-            systemImage="chevron.left.forwardslash.chevron.right"
-            action={() => void Safari.openURL(WORKER_SOURCE_URL)}
-          />
-          {current.globalSearchEndpoint.trim() ? (
-            <Button
-              title="恢复默认地址"
-              systemImage="arrow.counterclockwise"
-              action={() => update({ globalSearchEndpoint: "" })}
-            />
-          ) : null}
-        </Section>
-
-        <Section header={<Text>关于</Text>}>
-          <Button action={() => void Navigation.present({ element: <AboutPage /> })}>
-            <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
-              <Image systemName="info.circle" foregroundStyle="systemBlue" frame={{ width: 22 }} />
-              <Text foregroundStyle="label">关于 WLOC 虚拟定位</Text>
-              <Spacer />
-              <Image systemName="chevron.right" foregroundStyle="tertiaryLabel" font="caption" />
-            </HStack>
-          </Button>
+          <NavigationLink destination={<SettingsConnection current={current} update={update} />}>
+            <NavRow title="连接设置" value={current.deviceHost} systemImage="point.3.connected.trianglepath.dotted" />
+          </NavigationLink>
         </Section>
 
         <Section footer={<Text foregroundStyle="tertiaryLabel">改动即时保存，无需额外确认。</Text>}>
+          <NavigationLink destination={<SettingsAdvanced current={current} update={update} />}>
+            <NavRow title="高级" systemImage="gearshape.2" />
+          </NavigationLink>
+          <Button action={() => void Navigation.present({ element: <AboutPage /> })}>
+            <NavRow title="关于 WLOC 虚拟定位" systemImage="info.circle" />
+          </Button>
           <Button title="恢复默认" systemImage="arrow.counterclockwise" action={handleReset} />
         </Section>
       </List>

@@ -57,7 +57,8 @@ import { debugLog, describeError } from "./core/debug";
 import { restoreRealLocation, startLocationSession, type LocationSessionHandle } from "./core/session";
 import { defaultSpeed, joystickStep, modeInfo, PathWalker, type WalkState } from "./core/movement";
 import { parseGPX } from "./core/gpx";
-import { delay } from "./core/stream";
+import { distanceBetween } from "./core/geo";
+import { delay, withTimeout } from "./core/stream";
 import { DEFAULT_GLOBAL_ENDPOINT } from "./api/searchApi";
 import { SimulationLiveActivity, type SimulationState } from "./live_activity";
 
@@ -78,11 +79,6 @@ interface PlannedRoute {
   coordinates: Coordinate[];
   distance: number;
   travelTime: number;
-}
-
-async function openExternalURL(url: string): Promise<void> {
-  const ok = await Safari.openURL(url);
-  if (ok === false) throw new Error("打开 URL 失败");
 }
 
 function App() {
@@ -127,6 +123,8 @@ function App() {
   const walker = useObservable<PathWalker | null>(null);
   const movementTimer = useObservable<ReturnType<typeof setInterval> | null>(null);
   const joystickVector = useObservable({ dx: 0, dy: 0 });
+  /** 摇杆卡片被拖到哪儿了。浮层总会挡住一部分地图，挡哪儿由用户决定。 */
+  const joystickOffset = useObservable({ x: 0, y: 0 });
   const joystickPosition = useObservable<Coordinate | null>(null);
   /** 锁屏/灵动岛卡片。脚本被划掉后它仍在，是「忘了恢复」的最后一道提醒。 */
   const liveActivity = useObservable(() => SimulationLiveActivity());
@@ -134,6 +132,8 @@ function App() {
 
   // 当前选点（来自搜索/链接解析/收藏），供 MapPage 监听并跳转
   const pendingCoord = useObservable<Coordinate | null>(null);
+  /** 把镜头移到这个点（摇杆卡片上的准星）。保留当前缩放，不动选中点。 */
+  const recenterCoord = useObservable<Coordinate | null>(null);
 
   // 坐标状态（App 层管理）
   const coordLat = useObservable(0);
@@ -537,7 +537,9 @@ function App() {
    */
   useEffect(() => {
     const listener = (phase: ScenePhase) => {
-      debugLog("keepalive", `scenePhase=${phase}`);
+      // inactive 是前后台切换的过渡态，下面也不据此做任何事。记它纯属刷屏——
+      // 一次切换就能刷出 active → inactive → background 三条。
+      if (phase !== "inactive") debugLog("keepalive", `scenePhase=${phase}`);
       if (session.value === null) return;
       if (phase === "background") void acquireKeepAlive();
       else if (phase === "active") void BackgroundKeeper.stopKeepAlive().catch(() => undefined);
@@ -755,6 +757,26 @@ function App() {
         fireToast("系统里关闭了实时活动，锁屏和灵动岛不会显示");
         return;
       }
+      /*
+        开新卡之前先把旧卡全清掉。
+
+        实时活动的生命周期独立于脚本：退出 Scripting、脚本被系统回收，
+        卡片都还留在锁屏和通知中心里。再进来开一次模拟就多一张，
+        几轮下来能堆好几条「定点模拟」，而且每张都带着各自那个时间点的坐标。
+
+        手上这个 `liveActivity` 句柄只认得本进程起的那张，收不掉上一轮留下的，
+        所以必须用静态的 endAllActivities。
+      */
+      await LiveActivity.endAllActivities({ dismissTimeInterval: 0 }).catch(() => undefined);
+      /*
+        每次都从工厂拿一个新实例。
+
+        `LiveActivity.register` 返回的是工厂函数，而一个实例内部有 `_started`
+        标志、`start()` 一生只许调一次（再调就是
+        "this method must only be called once"）。整个会话复用同一个实例的话，
+        第二次开模拟就永远起不来卡片——而且只记日志不报错，表现是「突然没灵动岛了」。
+      */
+      liveActivity.setValue(SimulationLiveActivity());
       await liveActivity.value.start(liveActivityState(point));
       debugLog("liveactivity", "卡片已启动");
     } catch (error) {
@@ -945,20 +967,70 @@ function App() {
   async function handlePlanRoute(choice: MovementSelection): Promise<void> {
     if (!coordReady.value) throw new Error("请先在地图上选择终点");
 
+    const began = Date.now();
+    const lap = (tag: string) => debugLog("route", `${tag}（累计 ${Date.now() - began}ms）`);
+
     let start = routeStart;
-    if (!start) {
-      const gps = await Location.requestCurrent({ forceRequest: true });
+    if (start) {
+      lap("起点已手动指定");
+    } else if (activeLoc.value) {
+      /*
+        正在模拟时，「当前位置」就是我们自己下发的那个坐标，直接拿来用。
+
+        不能去问 Location：模拟中它返回什么由系统说了算，实测会给一个几小时前的
+        缓存——曾经出现过起点落在一千多公里外的陈旧位置上，然后用步行方式
+        去规划，MapKit 自然算不出来。而且这还白等一次定位。
+      */
+      start = { latitude: activeLoc.value.latitude, longitude: activeLoc.value.longitude };
+      lap("起点取自当前模拟位置");
+    } else {
+      /*
+        没在模拟，才去问真实定位。
+
+        这里坚持 `forceRequest`：缓存返回得快，但可能是上一个城市的，
+        拿它当起点规划出来的路线完全是错的。宁可等，也有超时兜底。
+      */
+      setStatusMsg("定位起点…");
+      lap("开始取当前位置");
+      const gps = await withTimeout(
+        Location.requestCurrent({ forceRequest: true }),
+        12000,
+        "取当前位置超时，请在「移动」面板里手动把选中的点设为起点",
+      );
+      lap(`取到当前位置 ${gps ? "成功" : "为空"}`);
       if (!gps) throw new Error("取不到当前位置，请手动指定起点");
       // GPS 是 WGS-84，而终点取自地图（地图系），规划前要统一到地图系。
       start = fromDeviceCoordinate(gps.latitude, gps.longitude);
     }
 
-    const result = await MapDirections.calculate({
-      source: { latitude: start.latitude, longitude: start.longitude },
-      destination: { latitude: coordLat.value, longitude: coordLng.value },
-      transportType: modeInfo(choice.mode).transportType,
-      requestsAlternateRoutes: true,
-    });
+    const transport = modeInfo(choice.mode).transportType;
+    const straight = distanceBetween(start, { latitude: coordLat.value, longitude: coordLng.value });
+    debugLog(
+      "route",
+      `规划 ${transport}：${start.latitude.toFixed(5)}, ${start.longitude.toFixed(5)}` +
+        ` → ${coordLat.value.toFixed(5)}, ${coordLng.value.toFixed(5)}，直线 ${(straight / 1000).toFixed(2)} km`,
+    );
+
+    // 步行方式在长距离上 MapKit 经常算很久甚至算不出来，先提醒一句。
+    if (transport === "walking" && straight > 50_000) {
+      debugLog("route", "注意：步行方式 + 超过 50 km，MapKit 很可能拒绝或极慢");
+    }
+
+    setStatusMsg("规划路线…");
+    lap("调用 MapDirections.calculate");
+    // 没有超时参数，自己包一层——不然算不出来会一直挂着，界面上看不出任何动静。
+    const result = await withTimeout(
+      MapDirections.calculate({
+        source: { latitude: start.latitude, longitude: start.longitude },
+        destination: { latitude: coordLat.value, longitude: coordLng.value },
+        transportType: transport,
+        requestsAlternateRoutes: true,
+      }),
+      30000,
+      `路线规划超时（${modeInfo(choice.mode).label} · 直线 ${(straight / 1000).toFixed(0)} km）。` +
+        "距离太远或该方式没有可用路线时会这样——换个交通方式，或者把起点终点拉近一点。",
+    );
+    lap(`calculate 返回 ${result.routes.length} 条`);
 
     const usable = result.routes
       .filter((item) => item.coordinates.length >= 2)
@@ -968,6 +1040,11 @@ function App() {
         distance: item.distance,
         travelTime: item.expectedTravelTime,
       }));
+    debugLog(
+      "route",
+      `可用 ${usable.length} 条：` +
+        usable.map((r) => `${(r.distance / 1000).toFixed(2)}km/${Math.round(r.travelTime / 60)}min`).join("、"),
+    );
     if (usable.length === 0) throw new Error("没有找到可用路线");
 
     // 路线换成别的来源了，手绘那几个编号点必须跟着清掉——
@@ -977,6 +1054,8 @@ function App() {
     setRoutes(usable);
     setRouteIndex(0);
     setSelection(choice);
+    setStatusMsg("");
+    lap("完成");
   }
 
   function handleSelectRoute(index: number) {
@@ -1095,8 +1174,16 @@ function App() {
       if (next.latitude === current.latitude && next.longitude === current.longitude) return;
 
       joystickPosition.setValue(next);
-      // 摇杆推着走时镜头要跟上，否则很快就推出视野。
-      pendingCoord.setValue(next);
+      /*
+        「当前坐标」要跟着摇杆走。
+
+        底部卡片显示的是选中点，不同步的话推了半天卡片还停在起点，
+        点「更新坐标」会直接把位置拽回出发地。
+        这里只写坐标不反查地名——每 500 ms 反查一次纯属给自己找麻烦，
+        地名留到松手停下时再更新。
+      */
+      coordLat.setValue(next.latitude);
+      coordLng.setValue(next.longitude);
       void pushCoordinate(active, next).catch((error) => {
         debugLog("ui", "摇杆下发坐标失败", describeError(error));
       });
@@ -1400,6 +1487,7 @@ function App() {
     >
       <MapPage
         pendingCoord={pendingCoord}
+        recenterCoord={recenterCoord}
         coordLat={coordLat}
         coordLng={coordLng}
         activeLoc={activeLoc}
@@ -1476,8 +1564,17 @@ function App() {
             {joystickOnRight ? <Spacer /> : null}
             <JoystickPad
               vector={joystickVector}
-              speedLabel={`${modeInfo(selection.mode).label} ${(selection.speed.metresPerSecond * 3.6).toFixed(1)} km/h`}
-              onStop={stopMovement}
+              cardOffset={joystickOffset}
+              modeLabel={modeInfo(selection.mode).label}
+              maxKmh={selection.speed.metresPerSecond * 3.6}
+              onRecenter={() =>
+                recenterCoord.setValue({ latitude: coordLat.value, longitude: coordLng.value })
+              }
+              onStop={() => {
+                stopMovement();
+                // 推的过程中只同步了坐标，地名还停在出发地——停下来补一次反查。
+                void resolvePlaceName(coordLat.value, coordLng.value);
+              }}
             />
             {joystickOnRight ? null : <Spacer />}
           </HStack>
@@ -1546,10 +1643,6 @@ function App() {
               <Text font="caption2" foregroundStyle="systemBlue">精确选点</Text>
             </HStack>
           </Button>
-
-
-
-
 
           {!!statusMsg && (
             <Text font="caption" foregroundStyle={sessionState === "active" ? "systemGreen" : "secondaryLabel"}>

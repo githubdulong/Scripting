@@ -83,8 +83,12 @@ body:
     attributes:
       label: 日志
       description: |
-        用 scripting-cli 连着的话，把相关那段贴上来。
-        `core/debug.ts` 顶部的 `DEBUG` 置为 `true` 会输出详细过程。
+        **设置 → 连接状态 → 运行日志 → 导出为文件**，把那个 txt 拖进来即可。
+        不用改代码、也不用连电脑——日志一直在记，默认保留最近 400 条。
+        复现前先点一次「清空日志」，交上来的东西会干净很多。
+
+        （接着 scripting-cli 调试的话，把 `core/debug.ts` 的 `DEBUG` 置为 `true`
+        可以让同样的内容直接打到终端。）
       render: text
     validations:
       required: false

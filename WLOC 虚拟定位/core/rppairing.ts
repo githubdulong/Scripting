@@ -28,7 +28,7 @@ import {
 } from "./crypto_utils";
 import { debugLog } from "./debug";
 import type { PairingRecord } from "./pairing";
-import { BufferedReader, withTimeout, writeAll, type ByteStream } from "./stream";
+import { BufferedReader, writeAll, type ByteStream } from "./stream";
 import { decodeTLV8, encodeTLV8, errorCode, hasError, TLV8Type } from "./tlv8";
 
 const FRAME_MAGIC = utf8("RPPairing");

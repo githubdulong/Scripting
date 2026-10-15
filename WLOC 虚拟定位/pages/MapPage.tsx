@@ -4,7 +4,6 @@
 import {
   useEffect,
   useObservable,
-  useRef,
   Map,
   Marker,
   MapPolyline,
@@ -26,9 +25,10 @@ import { DEFAULT_SPAN } from "../constants";
 import { loadActiveCache } from "../utils/storage";
 import { fromDeviceCoordinate } from "../utils/coords";
 
-
 interface MapPageProps {
   pendingCoord: Observable<Coordinate | null>;
+  /** 居中到这个点：只改中心、保留缩放、不动选中点。 */
+  recenterCoord: Observable<Coordinate | null>;
   coordLat: Observable<number>;
   coordLng: Observable<number>;
   /** 正在模拟的位置，另画一个绿点与选点区分。 */
@@ -48,6 +48,7 @@ interface MapPageProps {
 
 export function MapPage({
   pendingCoord,
+  recenterCoord,
   coordLat,
   coordLng,
   activeLoc,
@@ -71,17 +72,44 @@ export function MapPage({
       : MapCameraPosition.automatic(),
   );
 
-
-
   // POI 选点
   const mapSelection = useObservable<MapSelectionValue | null>(null);
 
-  // 移动地图中心
-  function moveCameraTo(lat: number, lng: number) {
+  /**
+   * 当前可视跨度。
+   *
+   * 跟随镜头时必须沿用它。写死 DEFAULT_SPAN 的话，摇杆每走一步都会把用户
+   * 刚放大的视野拽回默认值——表现就是「地图自己缩回去了」。
+   *
+   * 回写成哪种形态由 MapKit 自己定，四种都得能取到跨度。
+   */
+  function currentSpan(): { latitudeDelta: number; longitudeDelta: number } {
+    const pos = cameraPosition.value;
+    if (pos.region) return pos.region.span;
+    if (pos.rect) {
+      // rect 的 size 是米，按纬圈长度换算回经纬度跨度。
+      const cos = Math.cos((pos.rect.center.latitude * Math.PI) / 180);
+      return {
+        latitudeDelta: pos.rect.size.height / 111_320,
+        longitudeDelta: pos.rect.size.width / (111_320 * Math.max(0.01, cos)),
+      };
+    }
+    if (pos.camera) {
+      // camera 形态只有视距没有跨度，粗略折算——量级对得上就够了。
+      const delta = pos.camera.distance / 111_320;
+      return { latitudeDelta: delta, longitudeDelta: delta };
+    }
+    return DEFAULT_SPAN;
+  }
+
+  /** 移动地图中心。`keepZoom` 为真时保留用户当前的缩放。 */
+  function moveCameraTo(lat: number, lng: number, keepZoom = false) {
     cameraPosition.setValue(
       MapCameraPosition.region({
         center: { latitude: lat, longitude: lng },
-        span: { latitudeDelta: DEFAULT_SPAN.latitudeDelta, longitudeDelta: DEFAULT_SPAN.longitudeDelta },
+        span: keepZoom
+          ? currentSpan()
+          : { latitudeDelta: DEFAULT_SPAN.latitudeDelta, longitudeDelta: DEFAULT_SPAN.longitudeDelta },
       }),
     );
   }
@@ -98,6 +126,30 @@ export function MapPage({
     };
     pendingCoord.subscribe(cb);
     return () => pendingCoord.unsubscribe(cb);
+  }, []);
+
+  /*
+   * 居中到当前位置。**只在用户主动要求时**（摇杆卡片上的准星按钮）。
+   *
+   * 这里曾经是「摇杆走一步就跟一步」的自动跟随，试过两版都不行：
+   * 每个 tick 写一次 cameraPosition 会直接顶掉用户正在做的捏合和平移，
+   * 手势刚开始就被按回去；改成只在快出视野时才跟，用户一平移就立刻越界、
+   * 照样被拽回中间。根子在于「谁控制相机」，不是判断条件松紧。
+   *
+   * 推摇杆的人本来就盯着地图、自己掌握节奏，不需要我们替他摆镜头。
+   * 走出视野了点一下准星，或者自己滑一把。
+   *
+   * 和 pendingCoord 的区别：那个是「跳到这儿去」，要把缩放规整回默认、
+   * 顺带把选中点也挪过去；这个保留用户当前的缩放，也不动选中点。
+   */
+  useEffect(() => {
+    const cb = (target: Coordinate | null) => {
+      if (!target) return;
+      moveCameraTo(target.latitude, target.longitude, true);
+      recenterCoord.setValue(null);
+    };
+    recenterCoord.subscribe(cb);
+    return () => recenterCoord.unsubscribe(cb);
   }, []);
 
   /*

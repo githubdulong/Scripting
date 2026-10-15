@@ -102,6 +102,44 @@ SwiftUI 把列表行当成一个点击目标。做一排颜色圆点时栽过—
 - 启动时要清掉**无主卡片**（没有「未收尾记录」就说明上次正常结束，那张卡是残留）
 - 设置改动要**主动推一次更新**，不能只在「有进行中的会话」时推——卡片可能是
   上一次留下的，那时 `activeLoc` 已经是 null，但岛上还挂着旧内容
+- **`start()` 之前必须先 `LiveActivity.endAllActivities()`**
+
+最后那条是真摔出来的：启动时的清理在「有未收尾记录」时会**故意跳过**（那张卡正是
+提醒你去恢复的东西），于是
+
+```
+开模拟 → 卡 A，退出 App（没停）→ 重进，有记录所以不清 → 又开模拟 → 卡 B → …
+```
+
+几轮下来通知中心堆了好几条「定点模拟」，每张还带着各自那个时间点的坐标。
+
+手上的 `liveActivity` 实例句柄只认得**本进程**起的那张，收不掉上一轮留下的，
+所以清场只能用静态的 `LiveActivity.endAllActivities`。`end()` 仍然用实例方法——
+那是正常收尾，只该结束自己那张。
+
+### 2.5a `start()` 对一个实例只能调一次
+
+```ts
+// LiveActivity.register 返回的是工厂函数，不是实例
+static register<T>(name: string, builder: ...): () => LiveActivity<T>
+```
+
+实例内部有 `_started` 标志（还暴露成只读的 `started`），第二次调 `start()` 直接抛
+`Failed to execute LiveActivity.start, this method must only be called once`。
+
+```ts
+// 错：整个会话复用一个实例，第二次开模拟卡片就再也起不来了
+const activity = useObservable(() => SimulationLiveActivity());
+await activity.value.start(state);
+
+// 对：每次开卡都从工厂拿新的
+activity.setValue(SimulationLiveActivity());
+await activity.value.start(state);
+```
+
+这个坑特别阴，因为起卡片失败是**被兜住的**（起不来不该影响定位模拟），
+只落一行日志，用户那边的表现只是「这次怎么没灵动岛了」。`index.tsx` 的
+`startLiveActivity` 和 `PairingPage` 的 PIN 卡两处都要这么写。
 
 ### 2.6 Observable 必须在组件自己的 render 里读
 
@@ -224,6 +262,73 @@ LiveActivity.register("WlocSimulation", builder);
 现在配对 PIN 和定位模拟共用 `SimulationState`，靠 `kind` 区分。
 用不上的字段给中性值即可（见 `pages/PairingPage.tsx` 的 `pairingCardState`）。
 
+### 2.17 毛玻璃浮层压在地图上，一拖就掉帧
+
+`glassEffect` 要实时采样背后的内容再做模糊，而浮层背后是 MapKit 的地图。
+浮层每移动一帧就得跨这层边界重采样一次——静止时没事，拖起来一帧一跳。
+
+摇杆卡片的处理是按状态切：
+
+```tsx
+// 静止时和周围浮层一个质感；只在拖动的那几百毫秒降级成不透明底
+glassEffect={dragging ? undefined : { type: "rect", cornerRadius: 24 }}
+background={dragging ? <RoundedRectangle fill="rgba(28,28,32,0.9)" /> : undefined}
+```
+
+同理，跟着手指动的元素（摇杆帽）阴影半径要压小：半径越大，每帧要重算的
+范围越大。原生那版（`RoamControl/Features/Joystick/JoystickPad.swift`）
+踩的是同一个坑，那边的注释写得更细。
+
+### 2.18 手势挂在会移动的视图上，坐标空间必须是 `global`
+
+```tsx
+// 错：把手随卡片一起移动，local 坐标系的原点跟着动，
+//     translation 的基准被逐帧改写——位移被吃掉一部分（跟不上手指），
+//     误差还逐帧累积（抖）
+onDragGesture={{ minDistance: 0, onChanged: ... }}
+
+// 对：钉在全局坐标系上，起点才是固定的
+onDragGesture={{ minDistance: 0, coordinateSpace: "global", onChanged: ... }}
+```
+
+另外拖动把手上不该有点按行为，这样 `minDistance` 才能取 0。默认的 10 点
+意味着手指要先划过一段才开始动，同样是「不跟手」。
+
+### 2.19 别每个 tick 都写 `cameraPosition`
+
+写它就是在抢相机控制权。用户正在捏合或平移时，我们下一次写入会直接把
+手势顶掉——表现是「地图缩放不了、一拖就弹回中间」。
+
+摇杆试过两版自动跟随都不行：每 tick 跟一次，手势根本做不完；改成只在
+目标快出视野时才跟，用户一平移就立刻越界，照样被拽回。**根子在于谁控制
+相机，不是判断条件的松紧。**
+
+最后的做法是不自动跟随，卡片上给一个准星按钮，用户要居中时自己点一下
+（`recenterCoord`）。要读当前镜头状态时注意 MapKit 回写成
+`region` / `rect` / `camera` / `item` 四种形态由它自己定，`rect` 的 size
+是米、`camera` 只有视距，都得换算（见 `pages/MapPage.tsx` 的 `currentSpan`）。
+
+### 2.20 模拟进行中别去问 `Location.requestCurrent`
+
+模拟期间系统返回什么由它说了算，实测会给一个几小时前的缓存。曾经因此
+出现路线起点落在一千多公里外的陈旧位置上，然后用步行方式规划，
+MapKit 自然算不出来，界面上就是「规划不出来」。
+
+正在模拟时，「当前位置」就是我们自己下发的那个坐标，直接用 `activeLoc`。
+只有没在模拟时才去问真实定位，而且要带 `forceRequest`——缓存返回得快，
+但可能是上一个城市的。两种情况都要包超时，拿不到就明确让用户手动指定起点。
+
+### 2.21 日志缓冲区常开，`DEBUG` 只管要不要往终端刷
+
+`core/debug.ts` 里的环形缓冲（最近 400 条）**不受 `DEBUG` 控制**，这是有意的：
+手机上出了问题，不可能让用户为了看日志去改一行代码再重跑一遍，那时候现场
+早没了。缓冲常开，「连接状态」页点一下就能整段复制进 issue。
+
+开销是 400 条字符串、约 40 KB，可以忽略。真正有成本的是 `console.log` 走
+JS→原生 bridge，那个才归 `DEBUG` 管，默认 `false`。
+
+写日志仍然只记长度不记内容（见 2.9）。
+
 ---
 
 ## 3. 开发流程
@@ -232,11 +337,12 @@ LiveActivity.register("WlocSimulation", builder);
 # 类型检查（dts 从 Scripting 的工作区复制到仓库根）
 npx -y -p typescript@5.6 tsc --noEmit -p tsconfig.json
 
-# 自测，脱机可跑，不需要设备（190 项）
+# 自测，脱机可跑，不需要设备（217 项）
 npx -y tsx _selftest/wloc-engine.test.ts      # 字节序、plist、归档、握手原语、配对记录导出
 npx -y tsx _selftest/wloc-movement.test.ts    # 球面几何、路径推进、往返、摇杆、GPX
 npx -y tsx _selftest/wloc-pairverify.test.ts  # pair-verify 四步与密钥派生
 npx -y tsx _selftest/wloc-rsd.test.ts         # HTTP/2 帧、RemoteXPC、服务发现
+npx -y tsx _selftest/wloc-redact.test.ts      # 日志脱敏：该打码的打掉、该留的留住
 
 # 打包发布产物
 python build-release.py
@@ -245,6 +351,11 @@ python build-release.py
 **协议层的改动必须补自测。** 往返测试最有价值：编码 → 解码 → 比对。
 加配对记录导出时就是靠它抓出了「写入转义了、读取没反转义」。
 
+**自测样本一律用虚构值。** 写脱敏那组测试时顺手贴了一份真机日志进来——里面是
+实际位置、住处附近的街道名、设备 UUID，推上来就全公开了。格式照着真日志抄
+（位数、结构、JSON 包裹方式），内容另造：坐标用公开地标，UUID 和 IPv6 用一眼
+看得出是编的那种。`10.7.0.1` 这类公开约定值可以照用。
+
 ### 发布
 
 - `dist/<名字>.zip`，**zip 根目录必须直接是 `script.json` + `index.tsx`**，
@@ -252,6 +363,9 @@ python build-release.py
 - `script.json` 的 `remoteResource.url` 指向 **raw zip 地址**，不是仓库地址
 - **不要设 `autoUpdateInterval`** ——会按间隔自动覆盖设备上的脚本，开发期间很坑
 - 改了代码记得把 `version` 往上提，否则用户看不出有更新
+- 自测文件在仓库里是 `_selftest/`，和 Scripting 工作区的目录层级不同：
+  工作区里脚本在 `scripts/WLOC 虚拟定位/`，仓库里在根下。从工作区同步过来时
+  相对路径要跟着换：`../scripts/WLOC 虚拟定位/` → `../WLOC 虚拟定位/`
 
 安装链接的拼法：
 

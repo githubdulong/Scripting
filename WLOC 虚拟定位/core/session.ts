@@ -7,7 +7,6 @@
 // 只能扫端口再用 RPPairing 握手确认——握手帧头对不上就不是它。
 
 import { dvtPort, discoverServices } from "./rsd";
-import { toHex } from "./bytes";
 import { debugLog, describeError } from "./debug";
 import { DtxConnection } from "./dtx";
 import { LocationSimulation } from "./location";
@@ -121,7 +120,7 @@ async function ensureTunnelReady(endpoint: TunnelEndpoint, log: StatusReporter):
     return;
   }
 
-  await ensureLocalDevVPN(endpoint, log);
+  await ensureLocalDevVPN(log);
 }
 
 /**
@@ -131,7 +130,7 @@ async function ensureTunnelReady(endpoint: TunnelEndpoint, log: StatusReporter):
  * effectiveAddresses 一并带出来给调用方核对——纯 TCP 能连通不代表原生侧认这个地址。
  */
 
-async function ensureLocalDevVPN(endpoint: TunnelEndpoint, log: StatusReporter): Promise<VPNLocalDevState> {
+async function ensureLocalDevVPN(log: StatusReporter): Promise<VPNLocalDevState> {
   let state = await VPN.localDevVPN.getState();
   debugLog("vpn", "初始状态", JSON.stringify(state));
   if (state.effectiveStatus === "active") return state;
@@ -419,10 +418,8 @@ export async function collectDiagnostics(options: {
  */
 async function openTunnelWithDiagnostics(
   endpoint: TunnelEndpoint,
-  client: RemotePairingClient,
   firstPort: number,
   preSharedKey: Uint8Array,
-  log: StatusReporter,
 ): Promise<VPNRSDTunnel> {
   let lastError: unknown = null;
 
@@ -553,7 +550,7 @@ async function openLocationChannel(
   log(`建立加密隧道（${tunnelPort}）…`);
   let tunnel: VPNRSDTunnel;
   try {
-    tunnel = await openTunnelWithDiagnostics(endpoint, pairing.client, tunnelPort, preSharedKey, log);
+    tunnel = await openTunnelWithDiagnostics(endpoint, tunnelPort, preSharedKey);
   } catch (error) {
     await closeQuietly(() => pairing.stream.close());
     throw error;

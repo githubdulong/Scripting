@@ -29,7 +29,6 @@ import {
   type MovementMode,
   type MovementSpeed,
 } from "../core/movement";
-import type { Coordinate } from "../types";
 
 export interface MovementSelection {
   mode: MovementMode;
@@ -115,7 +114,15 @@ export function MovementPanel({
       await task();
       setStatus("");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(message);
+      /*
+        失败必须弹窗。
+
+        状态条渲染在 List 最底部，而触发按钮分散在中间——面板一长，
+        用户点完根本看不到那行红字，体感就是「点了没反应」。
+      */
+      await Dialog.alert({ title: "操作失败", message });
     } finally {
       setBusy(false);
     }
