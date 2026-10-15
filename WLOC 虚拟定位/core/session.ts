@@ -329,9 +329,15 @@ export async function collectDiagnostics(options: {
         value: peer.allowsIncomingTunnelConnections === false ? "否" : "是",
         ok: peer.allowsIncomingTunnelConnections !== false,
       });
+      // 这一项只说明「能不能反过来对设备发起 pair-setup」，是主动方的方向。
+      // 「配对这台设备」走的是响应方：我们广播成可配对主机、设备来连我们、
+      // PIN 在系统设置里输，不受这个标志影响。别把它读成「配不了对」。
       items.push({
-        label: "允许本机配对",
-        value: peer.allowsPairSetup === true ? "是" : "否（只能导入配对记录）",
+        label: "对设备发起配对",
+        value:
+          peer.allowsPairSetup === true
+            ? "设备允许"
+            : "设备不允许（不影响「配对这台设备」）",
         ok: null,
       });
     } catch (error) {
@@ -349,52 +355,6 @@ export async function collectDiagnostics(options: {
 
   debugLog("diag", "诊断结果", JSON.stringify(items));
   return items;
-}
-
-/**
- * 探一下设备允不允许在本机直接配对（pair-setup）。
- *
- * 走的是主动方流程：在已连上的 RemotePairing 端口上发 `setupManualPairing`，
- * 设备会弹「信任」对话框。成功即说明脚本能自己完成配对，不必再从 wloc 导入记录；
- * 被拒则会带出设备给的原因。
- *
- * 之所以先探不先写：完整 pair-setup 还要实现 SRP-6a（3072 位群、SHA-512），
- * 而这台设备的握手响应里 `allowsPairSetup` 是 false，值得先花十几行确认一下。
- */
-export async function probePairSetup(
-  endpoint: TunnelEndpoint,
-  onStatus?: StatusReporter,
-): Promise<string> {
-  const log = onStatus ?? (() => {});
-
-  await ensureTunnelReady(endpoint, log);
-  const pairing = await openPairingSession(endpoint, log);
-
-  try {
-    debugLog("setup", `设备能力：${JSON.stringify(pairing.peer)}`);
-    const result = await pairing.client.requestPairConsent("WLOC 虚拟定位", 90000, log);
-
-    if (result.kind === "ready") {
-      const summary =
-        `设备同意配对：salt ${result.salt?.length ?? 0} 字节、` +
-        `SRP 公钥 ${result.publicKey?.length ?? 0} 字节。` +
-        "本机直接配对这条路走得通，接下来只差 SRP-6a 证明交换。";
-      debugLog("setup", summary);
-      return summary;
-    }
-
-    const summary =
-      `设备拒绝了 pair-setup：${result.message}\n` +
-      `（设备声明 allowsPairSetup=${pairing.peer.allowsPairSetup}）`;
-    debugLog("setup", summary);
-    return summary;
-  } finally {
-    try {
-      await pairing.stream.close();
-    } catch {
-      // 探测用的连接，关不掉也无妨。
-    }
-  }
 }
 
 /**
