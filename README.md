@@ -76,8 +76,9 @@ npx -y -p typescript@5.6 tsc --noEmit -p tsconfig.json
 
 ## 参与开发
 
-先读 [CONTRIBUTING.md](CONTRIBUTING.md)——里面写了项目边界（哪些方向不接受）、
-自测怎么跑、以及几个踩过的 Scripting API 坑。
+- [CONTRIBUTING.md](CONTRIBUTING.md) —— 项目边界（哪些方向不接受）、环境、提交约定
+- [SKILL.md](SKILL.md) —— **维护手册**。协议链路怎么走、十几个踩过的坑、
+  为什么某些地方要那么写。动 `core/` 之前先看这个。
 
 提 issue 请用模板，Bug 那个模板里的「连接状态诊断」一栏很关键，
 缺了基本只能靠猜。**任何情况下都不要贴配对记录或私钥。**

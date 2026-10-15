@@ -585,7 +585,7 @@ function App() {
 
   async function handleStartSession() {
     if (!pairing) {
-      showErrorAlert("请先在「配对」里导入 wloc 导出的配对记录");
+      showErrorAlert("还没有配对。去「配对」页点「配对这台设备」，或导入已有的配对记录");
       return;
     }
     if (!coordReady.value) {
@@ -841,7 +841,7 @@ function App() {
     }
 
     if (!pairing) {
-      showErrorAlert("请先在「配对」里导入 wloc 导出的配对记录");
+      showErrorAlert("还没有配对。去「配对」页点「配对这台设备」，或导入已有的配对记录");
       return null;
     }
 

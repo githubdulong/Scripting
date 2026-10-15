@@ -3,7 +3,8 @@
 // 两条路：
 //   1. 「配对这台设备」——脚本自己起一个 TCP 监听、用 Bonjour 广播成可配对主机，
 //      系统设置里就会出现它，输入这里显示的 PIN 完成 SRP 握手。
-//   2. 「导入配对记录」——用 wloc 导出的 .mobiledevicepairing（或等价的 plist / JSON）。
+//   2. 「导入配对记录」——从别处导入已有记录（wloc 导出的 .mobiledevicepairing、
+//      本脚本导出的 plist / JSON 都认）。换设备或从旧版迁移时用。
 //
 // 新记录要先独立跑通一次 pair-verify 才会覆盖钥匙串里的旧记录：配对途中任何一步
 // 出错都可能留下一份连不上的记录，直接覆盖会把原本能用的那份弄丢。
@@ -21,9 +22,11 @@ import {
   DisclosureGroup,
   Image,
   useState,
+  useObservable,
   Navigation,
 } from "scripting";
 import { toHex, utf8 } from "../core/bytes";
+import { debugLog, describeError } from "../core/debug";
 import {
   deletePairing,
   exportPairingAsBinary,
@@ -37,6 +40,7 @@ import {
   type PairingRecord,
 } from "../core/pairing";
 import { createHostIdentity, createPIN, pairThisDevice } from "../core/pair_setup";
+import { PairingPinLiveActivity } from "../pairing_activity";
 import { verifyPairingRecord } from "../core/session";
 import { loadSettings } from "../utils/storage";
 
@@ -50,14 +54,33 @@ export function PairingPage() {
   const [pin, setPin] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
   const [pairingInProgress, setPairingInProgress] = useState(false);
+  /** 配对期间显示 PIN 的那张卡片。 */
+  const pinActivity = useObservable(() => PairingPinLiveActivity());
 
   /**
    * 在本机直接配对。
    *
-   * 广播期间要切到「设置」去输 PIN，脚本会被切到后台——所以整段流程
-   * 需要后台保活撑着，否则一离开应用监听就断了。
+   * 关键在顺序：**先把路指清楚，再出 PIN**。
+   * 一上来甩一个六位码，用户不知道该往哪儿输，等摸到设置里广播都快超时了。
+   * 所以先弹一个说明把路径念一遍，点「我知道了」才开始广播并显示 PIN。
+   *
+   * 广播期间要切到「设置」去输码，脚本会被切到后台——整段流程靠后台保活撑着。
    */
   async function startDevicePairing() {
+    const ready = await Dialog.confirm({
+      title: "配对这台设备",
+      message:
+        "接下来会生成一个六位 PIN，并把本机广播成一台可配对的电脑。\n\n" +
+        "拿到 PIN 后，去：\n" +
+        "设置 → 隐私与安全性 → 开发者 → 配对\n\n" +
+        "在列表里选「Scripting WLOC」，输入 PIN。\n" +
+        "系统会先要你输一次 iPhone 解锁密码，这是它自己的验证，正常。\n\n" +
+        "广播三分钟后自动结束。PIN 会同时显示在本页和灵动岛上，切到设置也看得到。",
+      confirmLabel: "我知道了，开始",
+      cancelLabel: "取消",
+    });
+    if (!ready) return;
+
     setPairingInProgress(true);
     setIsError(false);
     let lease = false;
@@ -66,6 +89,14 @@ export function PairingPage() {
       const code = createPIN();
       setPin(code);
       setStatus("正在启动配对广播…");
+
+      // 把 PIN 挂到灵动岛上：输码要切到「设置」，那时本页已经看不见了。
+      // 起不来不影响配对，只是得自己记住六位数。
+      try {
+        await pinActivity.value.start({ pin: code, expiresAt: Date.now() + 180_000 });
+      } catch (error) {
+        debugLog("liveactivity", "PIN 卡片启动失败", describeError(error));
+      }
 
       try {
         await BackgroundKeeper.keepAlive();
@@ -93,6 +124,10 @@ export function PairingPage() {
       setIsError(true);
     } finally {
       if (lease) await BackgroundKeeper.stopKeepAlive().catch(() => undefined);
+      // 配对结束就收掉卡片——PIN 已经没用了，留着是信息泄露也是干扰。
+      await pinActivity.value
+        .end({ pin: "", expiresAt: Date.now() }, { dismissTimeInterval: 0 })
+        .catch(() => undefined);
       setPin("");
       setPairingInProgress(false);
     }
@@ -236,13 +271,50 @@ export function PairingPage() {
           }
         >
           {pin ? (
-            <VStack alignment="leading" spacing={6} padding={{ vertical: 4 }}>
-              <Text font="caption" foregroundStyle="secondaryLabel">配对 PIN</Text>
-              <Text font="largeTitle" fontWeight="bold" fontDesign="monospaced" foregroundStyle="systemBlue">
-                {pin}
-              </Text>
+            <VStack alignment="leading" spacing={10} padding={{ vertical: 6 }}>
+              <VStack alignment="leading" spacing={2}>
+                <Text font="caption" foregroundStyle="secondaryLabel">配对 PIN</Text>
+                <Text
+                  font="largeTitle"
+                  fontWeight="bold"
+                  fontDesign="monospaced"
+                  foregroundStyle="systemBlue"
+                >
+                  {pin}
+                </Text>
+              </VStack>
+
+              {/* 把路径摆在 PIN 正下方，照着点就行，不用再回头看说明 */}
+              <VStack alignment="leading" spacing={4}>
+                <Text font="caption" fontWeight="semibold">接下来：</Text>
+                <Text font="caption2" foregroundStyle="secondaryLabel">
+                  ① 打开「设置」→ 隐私与安全性 → 开发者 → 配对
+                </Text>
+                <Text font="caption2" foregroundStyle="secondaryLabel">
+                  ② 列表里选「Scripting WLOC」
+                </Text>
+                <Text font="caption2" foregroundStyle="secondaryLabel">
+                  ③ 输入上面的 PIN，再按系统要求输一次 iPhone 解锁密码
+                </Text>
+                <Text font="caption2" foregroundStyle="secondaryLabel">
+                  ④ 回到本页等「✓ 配对完成」
+                </Text>
+              </VStack>
+
+              <Button
+                title="复制 PIN"
+                systemImage="doc.on.doc"
+                buttonStyle="borderless"
+                controlSize="small"
+                action={() => {
+                  Pasteboard.setString(pin);
+                  setStatus("已复制 PIN");
+                }}
+              />
+
               <Text font="caption2" foregroundStyle="tertiaryLabel">
-                记下它，去设置里输入。离开这一页 PIN 就没了，要重新开始。
+                PIN 同时显示在灵动岛上，切到设置里也看得到。广播三分钟后结束，
+                超时就回来重新开始。
               </Text>
             </VStack>
           ) : null}
@@ -333,7 +405,7 @@ export function PairingPage() {
           header={<Text font="caption" foregroundStyle="secondaryLabel">怎么拿到配对记录</Text>}
           footer={
             <Text font="caption2" foregroundStyle="tertiaryLabel">
-              文件里含私钥，等同于这台设备的调试授权，请勿外传。重启 iPhone 后系统侧的配对授权会失效，需要在 wloc 里重新配对并重新导出。
+              文件里含私钥，等同于这台设备的调试授权，请勿外传。重启 iPhone 后系统侧的配对授权会失效，回到这一页重新配一次即可。
             </Text>
           }
         >

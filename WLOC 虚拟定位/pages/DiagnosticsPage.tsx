@@ -173,7 +173,7 @@ export function DiagnosticsPage() {
         >
           <VStack alignment="leading" spacing={8}>
             <Text font="caption">① 开发者模式要开着（设置 → 隐私与安全性 → 开发者模式）</Text>
-            <Text font="caption">② iPhone 重启后系统侧的配对授权会失效，要在 wloc 里重新配对并重新导出</Text>
+            <Text font="caption">② iPhone 重启后系统侧的配对授权会失效，去「配对」页重新配一次（不必重启脚本）</Text>
             <Text font="caption">③ iOS 同时只允许一条 VPN 生效，代理和 Scripting 自身的隧道会互相顶掉</Text>
             <Text font="caption">④ 选「代理工具提供」时，代理那边要把 tun 的 loopback-address 配成对端地址</Text>
           </VStack>
