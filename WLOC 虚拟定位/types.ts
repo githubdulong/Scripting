@@ -76,6 +76,8 @@ export type CardTitleMode =
 export interface AppSettings {
   /** 锁屏卡片大标题 */
   cardTitle: CardTitleMode;
+  /** 卡片上「恢复真实位置」按钮的颜色 */
+  restoreTint: Color;
   /** cardTitle 为 custom 时用的文本 */
   cardCustomTitle: string;
   /** 灵动岛与锁屏卡片的主色（关键字色名，深浅模式自动跟随） */

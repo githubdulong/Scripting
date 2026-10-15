@@ -16,6 +16,7 @@ import {
   Spacer,
   TextField,
   ColorPicker,
+  DisclosureGroup,
   Navigation,
   type Color,
 } from "scripting";
@@ -48,6 +49,11 @@ interface SettingsPageProps {
 
 export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) {
   const [current, setCurrent] = useState<AppSettings>(settings);
+  // 这两组展开后很占地方，默认收起
+  const [tintOpen, setTintOpen] = useState(false);
+  const [moduleOpen, setModuleOpen] = useState(false);
+  /** 复制成功后的一行提示，显示在模块那一节的 footer 里。 */
+  const [copied, setCopied] = useState("");
 
   function update(patch: Partial<AppSettings>) {
     const next = { ...current, ...patch };
@@ -84,6 +90,30 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
           <Text foregroundStyle="label">{title}</Text>
           <Spacer />
           <Image systemName="arrow.up.right.square" foregroundStyle="tertiaryLabel" font="caption" />
+        </HStack>
+      </Button>
+    );
+  }
+
+  /**
+   * 复制行：点一下把地址放进剪贴板。
+   *
+   * 模块地址是给代理工具用的，在 Safari 里打开只会看到一堆配置文本，
+   * 还得自己全选复制——直接复制才是想要的那个动作。
+   */
+  function copyRow(title: string, url: string, systemImage: string) {
+    return (
+      <Button
+        action={() => {
+          Pasteboard.setString(url);
+          setCopied(`✓ 已复制 ${title} 的地址，去代理工具里新建模块粘贴即可`);
+        }}
+      >
+        <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
+          <Image systemName={systemImage} foregroundStyle="systemBlue" frame={{ width: 22 }} />
+          <Text foregroundStyle="label">{title}</Text>
+          <Spacer />
+          <Image systemName="doc.on.doc" foregroundStyle="tertiaryLabel" font="caption" />
         </HStack>
       </Button>
     );
@@ -183,11 +213,20 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
               {"\n\n"}
               自己写的话要点有两个：把 {DEFAULT_DEVICE_HOST}/32 划进 TUN 的包含路由，
               再把该地址设为 reflect（回环到本机）。
+              {copied ? `
+
+${copied}` : ""}
             </Text>
           }
         >
-          {link("Loon 模块（.lpx）", LOOPBACK_MODULE_LOON, "l.circle")}
-          {link("Surge 模块（.sgmodule）", LOOPBACK_MODULE_SURGE, "s.circle")}
+          <DisclosureGroup
+            title="模块地址"
+            isExpanded={moduleOpen}
+            onChanged={(value: boolean) => setModuleOpen(value)}
+          >
+            {copyRow("Loon 模块（.lpx）", LOOPBACK_MODULE_LOON, "l.circle")}
+            {copyRow("Surge 模块（.sgmodule）", LOOPBACK_MODULE_SURGE, "s.circle")}
+          </DisclosureGroup>
         </Section>
 
         <Section
@@ -227,6 +266,14 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
               prompt="想显示的标题"
             />
           ) : null}
+
+          {/* 卡片底部那个「恢复真实位置」按钮的颜色 */}
+          <ColorPicker
+            title="恢复按钮颜色"
+            value={current.restoreTint}
+            onChanged={(value: Color) => update({ restoreTint: value })}
+            supportsOpacity={false}
+          />
         </Section>
 
         {/*
@@ -276,8 +323,12 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
             onChanged={(value: Color) => update({ islandTint: value })}
             supportsOpacity={false}
           />
+          <DisclosureGroup
+            title="常用颜色"
+            isExpanded={tintOpen}
+            onChanged={(value: boolean) => setTintOpen(value)}
+          >
           <HStack frame={{ maxWidth: "infinity" }} spacing={8}>
-            <Text font="caption2" foregroundStyle="tertiaryLabel">常用</Text>
             <Spacer />
             {ISLAND_TINT_OPTIONS.map((opt) => (
               // 必须 borderless：List 的一行默认整行是一个点击目标，
@@ -296,7 +347,9 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
                 />
               </Button>
             ))}
+            <Spacer />
           </HStack>
+          </DisclosureGroup>
 
           {ISLAND_ICON_OPTIONS.map((opt) => (
             // 和下面的文字选项同处一个 Section，两边都有 "none"，key 要加前缀

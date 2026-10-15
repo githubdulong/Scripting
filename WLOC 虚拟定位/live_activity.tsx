@@ -55,6 +55,8 @@ export interface SimulationState {
   compactIconIsEmoji: boolean;
   /** 收起态右侧文字，已由界面层算好；为空表示不显示 */
   compactText: string;
+  /** 「恢复真实位置」按钮的颜色 */
+  restoreTint: Color;
 }
 
 function coordinateText(state: SimulationState): string {
@@ -164,7 +166,7 @@ function ContentView(state: SimulationState) {
       <Button
         title="恢复真实位置"
         systemImage="location.slash.fill"
-        tint="systemRed"
+        tint={state.restoreTint || "systemRed"}
         buttonStyle="borderedProminent"
         frame={{ maxWidth: "infinity" }}
         intent={RestoreLocationIntent(undefined)}
@@ -245,7 +247,7 @@ const builder: LiveActivityUIBuilder<SimulationState> = (state) => (
           <Button
             title="恢复真实位置"
             systemImage="location.slash.fill"
-            tint="systemRed"
+            tint={state.restoreTint || "systemRed"}
             controlSize="small"
             intent={RestoreLocationIntent(undefined)}
           />

@@ -40,6 +40,7 @@ export const DEFAULT_DEVICE_HOST = "10.7.0.1";
 export const DEFAULT_SETTINGS: AppSettings = {
   cardTitle: "place",
   cardCustomTitle: "",
+  restoreTint: "systemRed",
   islandTint: "systemGreen",
   islandIcon: "mode",
   islandEmoji: "📍",

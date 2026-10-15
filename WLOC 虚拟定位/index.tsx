@@ -675,6 +675,7 @@ function App() {
       compactIcon: islandIcon(moving ? info.systemImage : "", conf),
       compactIconIsEmoji: conf.islandIcon === "emoji",
       compactText: islandText(point, walk, conf),
+      restoreTint: conf.restoreTint,
     };
   }
 

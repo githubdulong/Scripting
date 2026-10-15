@@ -18,12 +18,24 @@ import {
   TextField,
   List,
   Section,
+  DisclosureGroup,
   Image,
   useState,
   Navigation,
 } from "scripting";
 import { toHex, utf8 } from "../core/bytes";
-import { deletePairing, loadPairing, parsePairingFile, savePairing, type PairingRecord } from "../core/pairing";
+import {
+  deletePairing,
+  exportPairingAsBinary,
+  exportPairingAsJson,
+  exportPairingAsXml,
+  loadPairing,
+  PAIRING_EXPORT_FORMATS,
+  parsePairingFile,
+  savePairing,
+  type PairingExportFormat,
+  type PairingRecord,
+} from "../core/pairing";
 import { createHostIdentity, createPIN, pairThisDevice } from "../core/pair_setup";
 import { verifyPairingRecord } from "../core/session";
 import { loadSettings } from "../utils/storage";
@@ -36,6 +48,7 @@ export function PairingPage() {
   const [pasteText, setPasteText] = useState("");
   const [showPaste, setShowPaste] = useState(false);
   const [pin, setPin] = useState("");
+  const [exportOpen, setExportOpen] = useState(false);
   const [pairingInProgress, setPairingInProgress] = useState(false);
 
   /**
@@ -124,6 +137,44 @@ export function PairingPage() {
     importBytes(utf8(text));
   }
 
+  /**
+   * 导出配对记录。
+   *
+   * 和 wloc 一样给两条路：存成文件，或复制成文本配合「从剪贴板粘贴」迁移。
+   * 只有纯文本格式能复制——二进制 plist 放不进剪贴板。
+   */
+  async function handleExport(format: PairingExportFormat, toClipboard: boolean) {
+    if (!pairing) return;
+    const spec = PAIRING_EXPORT_FORMATS.find((item) => item.id === format);
+    if (!spec) return;
+
+    setIsError(false);
+    try {
+      if (toClipboard) {
+        const text = format === "json" ? exportPairingAsJson(pairing) : exportPairingAsXml(pairing);
+        Pasteboard.setString(text);
+        setStatus(`✓ 已复制${spec.label}文本，可在另一台设备用「从剪贴板粘贴」导入`);
+        return;
+      }
+
+      const name = `${pairing.identifier || "wloc"}.${spec.extension}`;
+      // 直接给 Data，不落临时文件——少一处要清理的痕迹。
+      const data =
+        format === "binary"
+          ? Data.fromUint8Array(exportPairingAsBinary(pairing))
+          : Data.fromString(
+              format === "json" ? exportPairingAsJson(pairing) : exportPairingAsXml(pairing),
+            );
+      if (!data) throw new Error("无法构造导出数据");
+
+      const saved = await DocumentPicker.exportFiles({ files: [{ data, name }] });
+      setStatus(saved.length > 0 ? `✓ 已导出 ${name}` : "已取消导出");
+    } catch (error) {
+      setStatus(`导出失败：${error instanceof Error ? error.message : String(error)}`);
+      setIsError(true);
+    }
+  }
+
   function remove() {
     deletePairing();
     setPairing(null);
@@ -202,6 +253,55 @@ export function PairingPage() {
             disabled={pairingInProgress}
           />
         </Section>
+
+        {/*
+          导出。
+          记录等同于这台设备的调试授权，只该在自己的设备之间传——提示里说明一次，
+          不做额外拦截（用户自己的记录，拦了反而碍事）。
+        */}
+        {pairing ? (
+          <Section
+            header={<Text font="caption" foregroundStyle="secondaryLabel">导出配对记录</Text>}
+            footer={
+              <Text font="caption2" foregroundStyle="tertiaryLabel">
+                这份记录等同于本机的调试授权，只在你自己的设备之间传递，不要发给别人。
+                XML plist 和二进制 plist 两种格式 wloc 也能读。
+              </Text>
+            }
+          >
+            <DisclosureGroup
+              title="导出…"
+              isExpanded={exportOpen}
+              onChanged={(value: boolean) => setExportOpen(value)}
+            >
+              {PAIRING_EXPORT_FORMATS.map((spec) => (
+                <VStack key={`exp-${spec.id}`} alignment="leading" spacing={4} padding={{ vertical: 4 }}>
+                  <Text font="subheadline" fontWeight="semibold">{spec.label}</Text>
+                  <Text font="caption2" foregroundStyle="secondaryLabel">{spec.detail}</Text>
+                  <HStack spacing={12}>
+                    <Button
+                      title="存为文件"
+                      systemImage="square.and.arrow.down"
+                      buttonStyle="borderless"
+                      controlSize="small"
+                      action={() => void handleExport(spec.id, false)}
+                    />
+                    {spec.text ? (
+                      <Button
+                        title="复制文本"
+                        systemImage="doc.on.doc"
+                        buttonStyle="borderless"
+                        controlSize="small"
+                        action={() => void handleExport(spec.id, true)}
+                      />
+                    ) : null}
+                    <Spacer />
+                  </HStack>
+                </VStack>
+              ))}
+            </DisclosureGroup>
+          </Section>
+        ) : null}
 
         <Section header={<Text font="caption" foregroundStyle="secondaryLabel">导入配对记录</Text>}>
           <Button title="从文件导入…" action={importFromFile} />

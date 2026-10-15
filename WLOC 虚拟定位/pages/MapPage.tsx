@@ -4,6 +4,7 @@
 import {
   useEffect,
   useObservable,
+  useRef,
   Map,
   Marker,
   MapPolyline,
@@ -79,6 +80,17 @@ export function MapPage({
   );
 
 
+
+  /**
+    * 最后一次拿到的经纬跨度。
+    *
+    * 相机被转成 camera 形态后就取不到 region / rect 了，把视角摆正时要靠它
+    * 还原成 region——否则摆正后仍是 camera 形态，照样算不出坐标。
+    */
+  const lastSpan = useRef({
+    latitudeDelta: DEFAULT_SPAN.latitudeDelta,
+    longitudeDelta: DEFAULT_SPAN.longitudeDelta,
+  });
 
   // POI 选点
   const mapSelection = useObservable<MapSelectionValue | null>(null);
@@ -161,22 +173,22 @@ export function MapPage({
 
     const region = position.region;
     if (region) {
-      return {
-        center: region.center,
+      lastSpan.current = {
         latitudeDelta: region.span.latitudeDelta,
         longitudeDelta: region.span.longitudeDelta,
       };
+      return { center: region.center, ...lastSpan.current };
     }
 
     const rect = position.rect;
     if (rect) {
       // size 是米，换成度。经度那一轴随纬度收缩，要乘 cos。
       const cos = Math.max(0.01, Math.cos((rect.center.latitude * Math.PI) / 180));
-      return {
-        center: rect.center,
+      lastSpan.current = {
         latitudeDelta: rect.size.height / 111_320,
         longitudeDelta: rect.size.width / (111_320 * cos),
       };
+      return { center: rect.center, ...lastSpan.current };
     }
 
     return null;
@@ -219,14 +231,18 @@ export function MapPage({
                 // 倾斜或旋转后是透视投影，平面插值算不出正确坐标。
                 // 与其让用户自己去找 2D/3D 按钮，不如就地把相机摆正——
                 // 中心和距离都不动，只把 pitch / heading 归零，视野不跳。
+                // camera 形态（倾斜/旋转过，或系统就这么回写的）下既算不出坐标，
+                // 也拿不到跨度。摆正时必须写回 **region** 形态——
+                // 写 camera 的话形态固定不下来，之后每次点击都会再走到这里。
                 const camera = cameraPosition.value.camera;
-                if (camera && (camera.pitch !== 0 || camera.heading !== 0)) {
+                if (camera) {
                   cameraPosition.setValue(
-                    MapCameraPosition.camera({
-                      centerCoordinate: camera.centerCoordinate,
-                      distance: camera.distance,
-                      heading: 0,
-                      pitch: 0,
+                    MapCameraPosition.region({
+                      center: camera.centerCoordinate,
+                      span: {
+                        latitudeDelta: lastSpan.current.latitudeDelta,
+                        longitudeDelta: lastSpan.current.longitudeDelta,
+                      },
                     }),
                   );
                   onPickUnavailable();

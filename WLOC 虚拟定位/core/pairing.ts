@@ -5,7 +5,7 @@
 // 也可以由脚本自己配对（见 pair_setup.ts）：广播一个可配对主机，用 PIN 走 SRP。
 
 import { fromBase64, fromHex, toHex } from "./bytes";
-import { decodeBplist, isBplist, type PlistValue } from "./bplist";
+import { decodeBplist, encodeBplist, isBplist, type PlistValue } from "./bplist";
 
 export interface PairingRecord {
   /** 主机标识，pair-verify 的签名里要原样带上。 */
@@ -141,13 +141,31 @@ function asString(value: PlistValue | undefined): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+/**
+ * XML 实体反转义。
+ *
+ * 原先读取时不还原，设备名里带 `&` 或 `<` 的记录读回来就是 `A&lt;B`。
+ * wloc 导出的记录同样会中招——它用 PropertyListSerialization，该转义的都转义了。
+ */
+function xmlUnescape(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    // &amp; 必须最后换，否则 "&amp;lt;" 会被还原成 "<"
+    .replace(/&amp;/g, "&");
+}
+
 /** 从扁平 plist XML 里取出 key → 值。`<data>` 保持原文，交给 asBytes 解。 */
 function parseXmlPlistDict(xml: string): Record<string, string> {
   const result: Record<string, string> = {};
   const pattern = /<key>([\s\S]*?)<\/key>\s*<(string|data|integer|real)>([\s\S]*?)<\/\2>/g;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(xml)) !== null) {
-    result[match[1].trim()] = match[3].trim();
+    const raw = match[3].trim();
+    // base64 里不会有 XML 实体，只对文本字段反转义。
+    result[xmlUnescape(match[1].trim())] = match[2] === "data" ? raw : xmlUnescape(raw);
   }
   return result;
 }
@@ -213,4 +231,122 @@ export function parsePairingFile(bytes: Uint8Array): PairingRecord {
   }
 
   throw new Error(`无法识别的格式，文件开头：${text.slice(0, 60).replace(/\s+/g, " ")}`);
+}
+
+// ── 导出 ───────────────────────────────────────────────────────────
+//
+// 三种格式都能被本脚本的 `parsePairingFile` 读回来；XML plist 和二进制 plist
+// 还能被 wloc（iOS）读回去，字段名刻意保持一致。
+// 与 wloc 一样：既给文件，也给一份纯文本，后者配合「从剪贴板粘贴」迁移更省事。
+
+/** 配对记录可导出的格式。 */
+export type PairingExportFormat = "xml" | "binary" | "json";
+
+export const PAIRING_EXPORT_FORMATS: {
+  id: PairingExportFormat;
+  label: string;
+  detail: string;
+  /** 建议的文件扩展名 */
+  extension: string;
+  /** 是不是纯文本——纯文本才能直接往剪贴板放 */
+  text: boolean;
+}[] = [
+  {
+    id: "xml",
+    label: "XML plist",
+    detail: "纯文本，wloc 和本脚本都能读。迁移用这个最稳。",
+    extension: "mobiledevicepairing",
+    text: true,
+  },
+  {
+    id: "binary",
+    label: "二进制 plist",
+    detail: "体积小，和设备自己生成的格式一致。",
+    extension: "mobiledevicepairing",
+    text: false,
+  },
+  {
+    id: "json",
+    label: "JSON",
+    detail: "十六进制字段，便于人工核对。只有本脚本能读。",
+    extension: "json",
+    text: true,
+  },
+];
+
+/** plist 的 data 字段要 base64。 */
+function base64Of(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64");
+}
+
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/**
+ * XML plist。
+ *
+ * 字段名与 wloc 导出的 `.mobiledevicepairing` 一致，所以两边可以互导。
+ * `alt_irk` 为空时不写——有些记录本来就没有这一项，写个空 data 反而容易被误读。
+ */
+export function exportPairingAsXml(record: PairingRecord): string {
+  const entries: string[] = [
+    `  <key>identifier</key>\n  <string>${xmlEscape(record.identifier)}</string>`,
+    `  <key>private_key</key>\n  <data>${base64Of(record.privateKey)}</data>`,
+  ];
+  if (record.publicKey.length > 0) {
+    entries.push(`  <key>public_key</key>\n  <data>${base64Of(record.publicKey)}</data>`);
+  }
+  if (record.altIrk.length > 0) {
+    entries.push(`  <key>alt_irk</key>\n  <data>${base64Of(record.altIrk)}</data>`);
+  }
+  if (record.deviceName) {
+    entries.push(`  <key>device_name</key>\n  <string>${xmlEscape(record.deviceName)}</string>`);
+  }
+  if (record.deviceUDID) {
+    entries.push(`  <key>device_udid</key>\n  <string>${xmlEscape(record.deviceUDID)}</string>`);
+  }
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    "<dict>",
+    entries.join("\n"),
+    "</dict>",
+    "</plist>",
+    "",
+  ].join("\n");
+}
+
+/** 二进制 plist，和设备自己生成的格式一致。 */
+export function exportPairingAsBinary(record: PairingRecord): Uint8Array {
+  const dict: Record<string, PlistValue> = {
+    identifier: record.identifier,
+    private_key: record.privateKey,
+  };
+  if (record.publicKey.length > 0) dict.public_key = record.publicKey;
+  if (record.altIrk.length > 0) dict.alt_irk = record.altIrk;
+  if (record.deviceName) dict.device_name = record.deviceName;
+  if (record.deviceUDID) dict.device_udid = record.deviceUDID;
+  return encodeBplist(dict);
+}
+
+/** JSON，十六进制字段，便于人工核对。 */
+export function exportPairingAsJson(record: PairingRecord): string {
+  return JSON.stringify(
+    {
+      identifier: record.identifier,
+      privateKey: toHex(record.privateKey),
+      publicKey: toHex(record.publicKey),
+      altIrk: toHex(record.altIrk),
+      deviceName: record.deviceName,
+      deviceUDID: record.deviceUDID,
+    },
+    null,
+    2,
+  );
 }
