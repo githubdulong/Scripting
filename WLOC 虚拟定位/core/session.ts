@@ -289,6 +289,11 @@ export async function collectDiagnostics(options: {
     ok: null,
   });
   items.push({ label: "对端地址", value: endpoint.host, ok: null });
+  items.push({
+    label: "系统版本",
+    value: `${Device.systemName} ${Device.systemVersion} · ${Device.model}`,
+    ok: null,
+  });
 
   log("查询本机隧道状态…");
   try {
@@ -337,9 +342,13 @@ export async function collectDiagnostics(options: {
       const client = new RemotePairingClient(new RpPairingSocket(stream));
       const peer = await withTimeout(client.attemptPairVerify(), 6000, "握手超时");
       items.push({ label: "设备握手", value: "成功", ok: true });
+      // 这是 RemotePairing 的 wire protocol version，和 iOS 版本没关系——
+      // 两者数字撞上了（设备报 26、系统也叫 iOS 26），被当成系统版本问过一次。
       items.push({
-        label: "协议版本",
-        value: `设备 ${peer.wireProtocolVersion ?? "?"}（最低支持 ${peer.minimumWireProtocolVersion ?? "?"}）`,
+        label: "RemotePairing 协议",
+        value:
+          `v${peer.wireProtocolVersion ?? "?"}（最低支持 v${peer.minimumWireProtocolVersion ?? "?"}）` +
+          "，与 iOS 版本无关",
         ok: null,
       });
       items.push({

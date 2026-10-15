@@ -10,6 +10,7 @@ import {
   Text,
   Button,
   Image,
+  Script,
   Navigation,
 } from "scripting";
 import { WORKER_SOURCE_URL } from "../constants";
@@ -45,6 +46,33 @@ export function AboutPage() {
         navigationBarTitleDisplayMode="inline"
         toolbar={{ cancellationAction: <Button title="关闭" action={() => dismiss()} /> }}
       >
+        {/*
+          版本信息。
+          反馈 issue 的模板里要填脚本版本和系统版本，摆在最上面省得用户到处找。
+          点一下整段复制，贴进 issue 即可。
+        */}
+        <Section>
+          <Button
+            action={() => {
+              Pasteboard.setString(
+                `WLOC ${Script.metadata.version} · ${Device.systemName} ${Device.systemVersion} · ${Device.model}`,
+              );
+            }}
+          >
+            <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
+              <Image systemName="info.circle" foregroundStyle="systemBlue" frame={{ width: 22 }} />
+              <VStack alignment="leading" spacing={2}>
+                <Text foregroundStyle="label">WLOC 虚拟定位 {Script.metadata.version}</Text>
+                <Text font="caption2" foregroundStyle="secondaryLabel">
+                  {Device.systemName} {Device.systemVersion} · {Device.model}
+                </Text>
+              </VStack>
+              <Spacer />
+              <Image systemName="doc.on.doc" foregroundStyle="tertiaryLabel" font="caption" />
+            </HStack>
+          </Button>
+        </Section>
+
         <Section header={<Text>工作原理</Text>}>
           <VStack alignment="leading" spacing={8}>
             <Text font="caption">
