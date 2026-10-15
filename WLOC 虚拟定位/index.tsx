@@ -13,6 +13,7 @@ import {
   useRef,
   useState,
   ZStack,
+  Rectangle,
   VStack,
   HStack,
   Text,
@@ -51,6 +52,7 @@ import { SearchPage } from "./pages/SearchPage";
 import { AboutPage } from "./pages/AboutPage";
 import { MovementPanel, type MovementSelection } from "./pages/MovementPanel";
 import { JoystickPad } from "./pages/JoystickPad";
+import { CellularGuide, type GuideStage } from "./pages/CellularGuide";
 import { applyJitter, fromDeviceCoordinate, parseAndConvert, toDeviceCoordinate } from "./utils/coords";
 import { loadPairing, type PairingRecord } from "./core/pairing";
 import { debugLog, describeError } from "./core/debug";
@@ -132,6 +134,16 @@ function App() {
 
   // 当前选点（来自搜索/链接解析/收藏），供 MapPage 监听并跳转
   const pendingCoord = useObservable<Coordinate | null>(null);
+  /*
+    蜂窝数据引导的状态。
+    guideStart/guideError 用 ref：它们只在回调里读写，进渲染只会多出无谓的重绘。
+  */
+  const guideStage = useObservable<GuideStage | null>(null);
+  const guideAttempts = useObservable(0);
+  const guideStart = useRef<Coordinate | null>(null);
+  const guideError = useRef<unknown>(null);
+  const guideTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
   /** 把镜头移到这个点（摇杆卡片上的准星）。保留当前缩放，不动选中点。 */
   const recenterCoord = useObservable<Coordinate | null>(null);
 
@@ -855,6 +867,47 @@ function App() {
    *
    * 已经在模拟就直接复用——移动只是不断改坐标，没必要断开重连。
    */
+  /**
+   * 建立会话的那一段，拆出来是为了能被蜂窝引导的重试循环反复调用。
+   *
+   * 成功返回句柄，失败把错误原样抛出去——是报错还是转交引导，由调用方决定。
+   */
+  async function connectSession(start: Coordinate): Promise<LocationSessionHandle> {
+    const target = deviceCoordinate(start.latitude, start.longitude);
+    const handle = await startLocationSession({
+      record: pairing!,
+      endpoint: { host: settings.deviceHost, source: settings.tunnelSource },
+      latitude: target.latitude,
+      longitude: target.longitude,
+      keepAlive: settings.keepAlive,
+      onStatus: (message) => {
+        debugLog("status", message);
+        setStatusMsg(message);
+      },
+      onFailure: (message) => {
+        // 移动中掉线不自动重连：重连要从头建会话，而路径进度、往返计数都在
+        // PathWalker 里，续不上。停掉移动、如实报错，让用户自己决定重来。
+        stopMovement();
+        void handleSessionDropped(message, null);
+      },
+    });
+
+    session.setValue(handle);
+    setSessionState("active");
+    markActive(start.latitude, start.longitude);
+    const now = new Date().toISOString();
+    saveRecovery({
+      latitude: start.latitude,
+      longitude: start.longitude,
+      startedAt: now,
+      updatedAt: now,
+    });
+    void acquireKeepAlive();
+    sessionStartedAt.current = Date.now();
+    void startLiveActivity(start);
+    return handle;
+  }
+
   async function ensureSession(start: Coordinate): Promise<LocationSessionHandle | null> {
     const existing = session.value;
     if (existing) {
@@ -867,47 +920,112 @@ function App() {
       return null;
     }
 
-    const target = deviceCoordinate(start.latitude, start.longitude);
     setSessionState("connecting");
     setStatusMsg("准备中…");
     try {
-      const handle = await startLocationSession({
-        record: pairing,
-        endpoint: { host: settings.deviceHost, source: settings.tunnelSource },
-        latitude: target.latitude,
-        longitude: target.longitude,
-        keepAlive: settings.keepAlive,
-        onStatus: (message) => {
-          debugLog("status", message);
-          setStatusMsg(message);
-        },
-        onFailure: (message) => {
-          // 移动中掉线不自动重连：重连要从头建会话，而路径进度、往返计数都在
-          // PathWalker 里，续不上。停掉移动、如实报错，让用户自己决定重来。
-          stopMovement();
-          void handleSessionDropped(message, null);
-        },
-      });
-      session.setValue(handle);
-      setSessionState("active");
-      markActive(start.latitude, start.longitude);
-      const now = new Date().toISOString();
-      saveRecovery({
-        latitude: start.latitude,
-        longitude: start.longitude,
-        startedAt: now,
-        updatedAt: now,
-      });
-      void acquireKeepAlive();
-      sessionStartedAt.current = Date.now();
-      void startLiveActivity(start);
-      return handle;
+      return await connectSession(start);
     } catch (e) {
       setSessionState("idle");
       setStatusMsg("");
       debugLog("ui", "启动失败", describeError(e));
-      showErrorAlert(e instanceof Error ? e.message : String(e));
+      /*
+        连不上先问一句，别直接甩错误。
+
+        最常见的原因是在用蜂窝数据——mDNS 在蜂窝接口上找不到配对服务，而这个
+        要用户临时开一下飞行模式才能绕过去，光报个 Connection refused 没人知道
+        该干什么。读不到网络类型（Scripting 没有这个 API），所以让用户自己说。
+      */
+      guideStart.current = start;
+      guideError.current = e;
+      guideAttempts.setValue(0);
+      guideStage.setValue("help");
       return null;
+    }
+  }
+
+  /*
+    蜂窝数据引导。
+
+    用户确认在用移动数据之后，这里每 4 秒重试一次建会话——他在控制中心切飞行
+    模式、再切回应用的这段时间里，脚本自己在试，连上就自动进入「可以关掉了」。
+    不这么做的话，用户每切一次都得回来手动点一次重试。
+  */
+  const GUIDE_RETRY_MS = 4000;
+
+  function stopGuideLoop() {
+    const timer = guideTimer.current;
+    if (timer !== null) {
+      clearInterval(timer);
+      guideTimer.current = null;
+    }
+  }
+
+  function beginGuideLoop() {
+    const start = guideStart.current;
+    if (!start) return;
+    stopGuideLoop();
+    guideAttempts.setValue(0);
+    guideStage.setValue("airplaneOn");
+
+    let running = false;
+    guideTimer.current = setInterval(() => {
+      // 上一轮还没跑完就跳过，免得几条建会话的流程叠在一起。
+      if (running) return;
+      running = true;
+      guideAttempts.setValue(guideAttempts.value + 1);
+      void connectSession(start)
+        .then(() => {
+          stopGuideLoop();
+          guideStage.setValue("airplaneOff");
+        })
+        .catch((error) => {
+          /*
+            飞行模式开着的那几秒必然是 ENETUNREACH——隧道跟着断了。
+            这是流程的一部分，不是故障，记一行短的就够；其他错误才值得记全。
+          */
+          const code = (error as { code?: string } | null)?.code ?? "";
+          if (code === "ENETUNREACH") {
+            debugLog("guide", `第 ${guideAttempts.value} 次：网络不可达（飞行模式开着时正常）`);
+          } else {
+            debugLog("guide", `第 ${guideAttempts.value} 次重试仍失败`, describeError(error));
+          }
+        })
+        .finally(() => {
+          running = false;
+        });
+    }, GUIDE_RETRY_MS);
+  }
+
+  function dismissGuide(showError: boolean) {
+    stopGuideLoop();
+    guideStage.setValue(null);
+    setSessionState("idle");
+    setStatusMsg("");
+    const error = guideError.current;
+    guideStart.current = null;
+    guideError.current = null;
+    if (showError && error) {
+      showErrorAlert(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function retryFromGuide() {
+    const start = guideStart.current;
+    if (!start) return;
+    stopGuideLoop();
+    guideStage.setValue(null);
+    setSessionState("connecting");
+    setStatusMsg("准备中…");
+    try {
+      await connectSession(start);
+      guideStart.current = null;
+      guideError.current = null;
+    } catch (e) {
+      debugLog("ui", "引导内重试失败", describeError(e));
+      guideError.current = e;
+      guideStage.setValue("help");
+      setSessionState("idle");
+      setStatusMsg("");
     }
   }
 
@@ -1799,6 +1917,24 @@ function App() {
           </HStack>
         </VStack>
       </VStack>
+
+      {/*
+        蜂窝引导压在最上层，并且盖一层半透明背景——这期间要用户去控制中心切
+        飞行模式，底下的地图和按钮都不该还能点。
+      */}
+      {guideStage.value !== null ? (
+        <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
+          <Rectangle fill="rgba(0,0,0,0.45)" frame={{ maxWidth: "infinity", maxHeight: "infinity" }} />
+          <CellularGuide
+            stage={guideStage.value}
+            attempts={guideAttempts.value}
+            onRetry={() => void retryFromGuide()}
+            onUseCellular={beginGuideLoop}
+            onCancel={() => dismissGuide(true)}
+            onDone={() => dismissGuide(false)}
+          />
+        </ZStack>
+      ) : null}
     </ZStack>
   );
 }

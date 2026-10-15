@@ -239,11 +239,12 @@ export function DiagnosticsPage() {
           header={<Text font="caption" foregroundStyle="secondaryLabel">连不上时先看这几条</Text>}
         >
           <VStack alignment="leading" spacing={8}>
-            <Text font="caption">① 开发者模式要开着（设置 → 隐私与安全性 → 开发者模式）</Text>
-            <Text font="caption">② 更新系统后设备侧的配对授权会失效，去「配对」页重新配一次（不必重装脚本）</Text>
-            <Text font="caption">③ iOS 同时只允许一条 VPN 生效，代理和 Scripting 自身的隧道会互相顶掉</Text>
-            <Text font="caption">④ 选「代理工具提供」时，代理那边要把 tun 的 loopback-address 配成对端地址</Text>
-            <Text font="caption">⑤ 代理模式下代理工具要自己确认是否在运行——iOS 不让应用读别家的 VPN，这里看不出来</Text>
+            <Text font="caption">① 用蜂窝数据时：确认隧道已连接 → 控制中心开关一次飞行模式 → 重新开始模拟。连上之后蜂窝照常用，本地网络只在起步那一刻需要</Text>
+            <Text font="caption">② 开发者模式要开着（设置 → 隐私与安全性 → 开发者模式）</Text>
+            <Text font="caption">③ 更新系统后设备侧的配对授权会失效，去「配对」页重新配一次（不必重装脚本）</Text>
+            <Text font="caption">④ iOS 同时只允许一条 VPN 生效，代理和 Scripting 自身的隧道会互相顶掉</Text>
+            <Text font="caption">⑤ 选「代理工具提供」时，代理那边要把 tun 的 loopback-address 配成对端地址</Text>
+            <Text font="caption">⑥ 代理模式下代理工具要自己确认是否在运行——iOS 不让应用读别家的 VPN，这里看不出来</Text>
           </VStack>
         </Section>
       </List>

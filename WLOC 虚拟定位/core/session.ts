@@ -212,8 +212,12 @@ async function candidatePorts(endpoint: TunnelEndpoint, log: StatusReporter): Pr
   debugLog("scan", "开放端口", ports.join(", ") || "无");
   if (ports.length === 0) {
     throw new Error(
-      `${endpoint.host} 的 ${PORT_RANGE_START}-${PORT_RANGE_END} 没有开放端口。\n` +
-        "请确认：① 已开启开发者模式；② 本机隧道已连接；③ 刚更新过系统的话需要重新配对。",
+      `${endpoint.host} 的 ${PORT_RANGE_START}-${PORT_RANGE_END} 没有开放端口。\n\n` +
+        "① 在用蜂窝数据吗？mDNS 在蜂窝接口上找不到配对服务。\n" +
+        "　 确认隧道已连接后，控制中心开关一次飞行模式再回来重试\n" +
+        "② 开发者模式开着吗？\n" +
+        "③ 本机隧道连上了吗？\n" +
+        "④ 刚更新过系统的话，需要回「配对」页重新配一次",
     );
   }
   return ports;
@@ -227,8 +231,11 @@ interface PairingSession {
 }
 
 /** 逐个端口试 RPPairing 握手，握上即认定是配对服务。 */
-async function openPairingSession(endpoint: TunnelEndpoint, log: StatusReporter): Promise<PairingSession> {
-  const ports = await candidatePorts(endpoint, log);
+async function tryPorts(
+  endpoint: TunnelEndpoint,
+  ports: number[],
+  log: StatusReporter,
+): Promise<{ session: PairingSession | null; lastError: unknown }> {
   let lastError: unknown = null;
 
   for (const port of ports) {
@@ -240,7 +247,7 @@ async function openPairingSession(endpoint: TunnelEndpoint, log: StatusReporter)
       log(`配对服务：${port}`);
       debugLog("pair", `端口 ${port} 握手成功`, JSON.stringify(peer));
       Storage.set(PORT_CACHE_KEY, port);
-      return { stream, client, peer, port };
+      return { session: { stream, client, peer, port }, lastError: null };
     } catch (error) {
       lastError = error;
       debugLog("pair", `端口 ${port} 不是配对服务`, describeError(error));
@@ -254,10 +261,108 @@ async function openPairingSession(endpoint: TunnelEndpoint, log: StatusReporter)
     }
   }
 
-  throw new Error(
-    `试过 ${ports.length} 个端口都不是 RemotePairing 服务。` +
-      `最后一个错误：${lastError instanceof Error ? lastError.message : String(lastError)}`,
-  );
+  return { session: null, lastError };
+}
+
+async function openPairingSession(endpoint: TunnelEndpoint, log: StatusReporter): Promise<PairingSession> {
+  const cached = Number(Storage.get<number>(PORT_CACHE_KEY) ?? 0);
+
+  // 第一轮：缓存端口 + Bonjour 公告的端口，都是现成的，快。
+  const first = await candidatePorts(endpoint, log);
+  const firstTry = await tryPorts(endpoint, first, log);
+  if (firstTry.session) return firstTry.session;
+
+  /*
+    缓存的端口连不上，而且这一轮也没拿到别的候选——说明服务换了端口
+    （设备重启、切换网络都会换），而 Bonjour 这次没发现新的。
+
+    以前到这儿就结束了，日志里只留一句「试过 1 个端口都不是 RemotePairing 服务」，
+    而那个端口早就不是配对服务了。现在清掉缓存再走一轮全量扫描，
+    真找不到再判死刑。
+  */
+  if (cached > 0 && first.length === 1 && first[0] === cached) {
+    Storage.remove(PORT_CACHE_KEY);
+    debugLog("scan", `缓存端口 ${cached} 已失效，清掉重新查找`);
+    log("缓存的端口失效了，重新查找…");
+
+    const second = (await candidatePorts(endpoint, log)).filter((port) => port !== cached);
+    if (second.length > 0) {
+      const secondTry = await tryPorts(endpoint, second, log);
+      if (secondTry.session) return secondTry.session;
+      throw new Error(describePairingFailure(endpoint, first.length + second.length, secondTry.lastError));
+    }
+  }
+
+  throw new Error(describePairingFailure(endpoint, first.length, firstTry.lastError));
+}
+
+/**
+ * 把底层错误码翻译成能照着做的提示。
+ *
+ * 原先一律甩「试过 N 个端口都不是 RemotePairing 服务，最后一个错误：Connection
+ * refused」——用户看完不知道该去动哪儿，而这几个错误码其实指向完全不同的原因：
+ *
+ * - `ECONNREFUSED`：SYN 出去了、对面回了 RST。流量**到了某处**但没人在那个端口
+ *   监听，不是路由不通。代理模式下这几乎总是「回环没生效」。
+ * - 超时：流量石沉大海，那才是路由或反射规则的问题。
+ */
+function describePairingFailure(endpoint: TunnelEndpoint, tried: number, error: unknown): string {
+  const code = (error as { code?: string } | null)?.code ?? "";
+  const message = error instanceof Error ? error.message : String(error);
+  const proxy = endpoint.source === "proxyApp";
+
+  if (code === "ECONNREFUSED") {
+    /*
+      被拒绝说明流量到了本机、只是那个端口上没有服务。
+
+      头一个要问的是蜂窝。配对服务靠 mDNS 公告自己，而蜂窝接口上没有本地链路，
+      发现不了它，缓存的端口又早已失效。
+
+      解法不是「必须连 WiFi」——**临时**打开飞行模式即可：撤掉蜂窝接口，mDNS 就
+      回到本地，会话建起来之后关掉飞行模式，模拟照常继续（mDNS 只在建会话那一刻
+      用得上）。这套顺序是原生那版（wloc for iOS）验证过的，见它的
+      MobileDataGuidanceView 三阶段引导。
+    */
+    const cellular =
+      `${endpoint.host} 拒绝了连接——流量到了本机，但那个端口上没有服务。\n\n` +
+      "用蜂窝数据的话多半是这个原因：配对服务靠 mDNS 公告，而蜂窝接口上没有本地链路，找不到它。\n" +
+      "按顺序做一遍：\n" +
+      "① 先确认隧道已连接\n" +
+      "② 控制中心开一次飞行模式，等几秒再关掉\n" +
+      "③ 回来重新开始模拟\n" +
+      "④ 连上之后蜂窝照常用，位置模拟不受影响\n\n" +
+      "怎么弄都不行的话，改连 WiFi。\n\n";
+    return proxy
+      ? cellular +
+          "用 WiFi 还这样的话：开发者模式开着吗？代理工具在运行、回环模块已启用吗？\n" +
+          "把「隧道来源」切回「Scripting 自身」试一次——那边也连不上，就不是代理工具的问题。"
+      : cellular + "用 WiFi 还这样的话：开发者模式开着吗？刚更新过系统的话需要回「配对」页重新配一次。";
+  }
+
+  /*
+    网络不可达：连 10.7.0.1 这条路由都没有，和「到了但没服务」是两回事。
+
+    最常见的就是飞行模式开着——隧道依附于网络接口，飞行模式一开它也跟着断。
+    所以按引导开关飞行模式时，中间这一下报错是预期的，关掉之后才会连上。
+  */
+  if (code === "ENETUNREACH") {
+    return (
+      `连不到 ${endpoint.host}，这条路由不存在。\n\n` +
+      "飞行模式开着吗？隧道会跟着一起断——关掉飞行模式，网络和隧道一起恢复，再重试。\n" +
+      (proxy
+        ? "代理工具也要确认是在运行的，TUN 断了之后有些工具不会自己重连。"
+        : "本机隧道可能也需要重新连一次，去「连接状态」看一眼。")
+    );
+  }
+
+  if (code === "ETIMEDOUT" || code === "EHOSTUNREACH" || message.includes("超时")) {
+    return proxy
+      ? `连 ${endpoint.host} 没有响应——代理工具没把这个地址反射回本机。\n\n` +
+          `检查回环模块是否生效，以及 TUN 的包含路由里有没有 ${endpoint.host}。`
+      : `连 ${endpoint.host} 没有响应，本机隧道可能没真正建立。去「连接状态」跑一遍看卡在哪。`;
+  }
+
+  return `试过 ${tried} 个端口都不是 RemotePairing 服务。最后一个错误：${message}`;
 }
 
 /** 诊断项：`ok` 为 null 表示只是陈述事实，无所谓好坏。 */

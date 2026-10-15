@@ -108,6 +108,15 @@ export function AboutPage() {
               </Text>
             </VStack>
             <VStack alignment="leading" spacing={2}>
+              <Text font="caption" fontWeight="semibold">蜂窝数据下要借一次飞行模式</Text>
+              <Text font="caption2" foregroundStyle="secondaryLabel">
+                配对服务靠 mDNS 公告，而蜂窝接口上没有本地链路，发现不了它。
+                确认隧道已连接后，去控制中心开关一次飞行模式，再回来开始模拟——
+                撤掉蜂窝接口再接回来，设备就能重新广播配对服务。连上之后蜂窝照常用，
+                本地网络只在起步那一刻需要。脚本会在连不上时弹出引导并自动重试。
+              </Text>
+            </VStack>
+            <VStack alignment="leading" spacing={2}>
               <Text font="caption" fontWeight="semibold">更新系统后需要重新配对</Text>
               <Text font="caption2" foregroundStyle="secondaryLabel">
                 系统更新会让设备侧的配对授权失效。此时本地记录还在、握手也能过，
