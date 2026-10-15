@@ -20,7 +20,8 @@
       "scripting": [
         "./dts/scripting.d.ts"
       ]
-    }
+    },
+    "types": []
   },
   "include": [
     "./dts/*.d.ts",

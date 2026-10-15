@@ -141,17 +141,14 @@ const active = activeLoc.value;
 记录读回来是 `A&lt;B`。wloc 导出的记录同样会中招。注意 `&amp;` 要**最后**反转义，
 否则 `&amp;lt;` 会被还原成 `<`。
 
-### 2.11 `node:net` 的 Server 要自己补类型
+### 2.11 别让 `@types/node` 漏进来
 
-@types/node 这一版把 `net.Server` 写成 `class Server implements EventEmitter`
-而非 `extends`，`on` / `once` / `removeListener` 一个都没继承到。
-`dts/node-server-pending.d.ts` 补了这几个。
+`tsconfig.json` 里有 `"types": []`。工作区的上级目录装了 `@types/node`，
+不排除的话它会和 Scripting 自己的 `dts/node.d.ts` 一起合并进 `module "net"`，
+两个同名 `class Server` 冲突（`skipLibCheck` 把错误吞了），
+结果 `on` / `once` / `removeListener` 解析不到。
 
-**必须增补 `"node:net"` 而不是 `"net"`** —— 代码从前者导入，augment 后者完全无效
-（排查了很久才发现）。
-
-另外**不要给 tsconfig 加 `"types": []`** 来排除 @types/node：会把
-`setInterval` / `clearInterval` 一起切掉（Scripting 自己的 dts 没声明它们）。
+Scripting 的 dts 自带定时器和 `node:*` 全套声明，不需要 @types/node。
 
 ### 2.12 隧道监听是一次性的
 
@@ -161,17 +158,24 @@ const active = activeLoc.value;
 
 `core/tlsprobe.ts` 的取证因此做成了诊断页里的手动按钮，不放在自动失败路径上。
 
-### 2.13 地图选点只能靠手算
+### 2.13 地图选点用 `MapReader`
 
-Scripting 没有 MapKit 的 `MapReader` / `proxy.convert(_:from:)`。现在的做法是从
-`cameraPosition` 取可视范围、配合 `GeometryReader` 的尺寸做线性插值。
+```tsx
+<MapReader>
+  {(proxy: MapProxy) => (
+    <Map onTapGesture={{ perform: (p) => {
+      const coord = proxy.convertPoint(p);   // 投影取不到时返回 null
+      ...
+    }}} />
+  )}
+</MapReader>
+```
 
-注意 `MapCameraPosition` 有四种形态（`region` / `rect` / `camera` / `item`），
-**双向绑定回写成哪一种由 MapKit 决定**。只认 `region` 的话，用户一拖地图就再也
-算不出坐标。`camera` 形态（倾斜、旋转）下是透视投影，线性插值从原理上不成立，
-这时退回选**地图中心**——那个值四种形态都读得到。
-
-这是已知的能力缺口，已反馈给应用作者。
+`convertPoint` / `convertCoordinate` 由 MapKit 自己做投影，倾斜、旋转、任意
+缩放都准。**不要再自己从 `cameraPosition` 反推跨度去插值**——那是这个 API
+进来之前的权宜做法，`MapCameraPosition` 回写成哪种形态（region / rect /
+camera / item）由 MapKit 决定，camera 形态下拿不到跨度，倾斜后是透视投影、
+线性插值根本不成立。
 
 ### 2.14 坐标系：地图是 GCJ-02，设备是 WGS-84
 

@@ -11,16 +11,14 @@ import {
   MapCircle,
   Annotation,
   Text,
-  GeometryReader,
+  MapReader,
   MapUserLocationButton,
   MapCompass,
   MapPitchToggle,
   MapScaleView,
-  VStack,
-  Image,
   ZStack,
   type MapSelectionValue,
-  type GeometryProxy,
+  type MapProxy,
   type Point,
 } from "scripting";
 import type { Coordinate, ActiveLocation, MapLayerId } from "../types";
@@ -28,14 +26,6 @@ import { DEFAULT_SPAN } from "../constants";
 import { loadActiveCache } from "../utils/storage";
 import { fromDeviceCoordinate } from "../utils/coords";
 
-// 从 MapCameraPosition 中提取中心坐标
-function getCoordFromPosition(pos: MapCameraPosition): Coordinate | null {
-  if (pos.region) return { latitude: pos.region.center.latitude, longitude: pos.region.center.longitude };
-  if (pos.camera) return { latitude: pos.camera.centerCoordinate.latitude, longitude: pos.camera.centerCoordinate.longitude };
-  if (pos.rect) return { latitude: pos.rect.center.latitude, longitude: pos.rect.center.longitude };
-  if (pos.item) return { latitude: pos.item.coordinate.latitude, longitude: pos.item.coordinate.longitude };
-  return null;
-}
 
 interface MapPageProps {
   pendingCoord: Observable<Coordinate | null>;
@@ -52,7 +42,7 @@ interface MapPageProps {
   drawnPath: Coordinate[];
   layer: Observable<MapLayerId>;
   onCoordChange: (lat: number, lng: number, name?: string) => void;
-  /** 当前相机姿态下点选不可用（3D / 旋转），由调用方提示用户。 */
+  /** 地图投影暂时取不到（刚挂载、或已卸载），由调用方提示用户。 */
   onPickUnavailable: () => void;
 }
 
@@ -153,78 +143,23 @@ export function MapPage({
 
   const mapStyle = layerToStyle(layer.value);
 
-  /**
-   * 相机当前框住的经纬范围。
-   *
-   * 双向绑定在手势结束后回写的不一定还是 region 形式——也可能是 rect（米制尺寸）
-   * 或 camera（视点式）。只认 region 的话，用户一拖动地图就再也换算不出坐标了。
-   */
-  function visibleSpan(): { center: Coordinate; latitudeDelta: number; longitudeDelta: number } | null {
-    const position = cameraPosition.value;
-
-    const region = position.region;
-    if (region) {
-      return {
-        center: region.center,
-        latitudeDelta: region.span.latitudeDelta,
-        longitudeDelta: region.span.longitudeDelta,
-      };
-    }
-
-    const rect = position.rect;
-    if (rect) {
-      // size 是米，换成度。经度那一轴随纬度收缩，要乘 cos。
-      const cos = Math.max(0.01, Math.cos((rect.center.latitude * Math.PI) / 180));
-      return {
-        center: rect.center,
-        latitudeDelta: rect.size.height / 111_320,
-        longitudeDelta: rect.size.width / (111_320 * cos),
-      };
-    }
-
-    return null;
-  }
-
-  /**
-   * 把点击位置换算成坐标——这就是「点哪选哪」。
-   *
-   * Scripting 没有 MapKit 的 MapReader/proxy.convert，但该有的料都在：
-   * 相机给出中心与跨度，GeometryReader 给出视图尺寸，线性插值即可。
-   * 地图是墨卡托投影、纬度并非严格线性，不过在城市级跨度下误差只有米级。
-   *
-   * 取不到跨度时返回 null，由调用方提示——默默退回地图中心会表现成
-   * 「点哪都选中间」，比不响应更难查。
-   * 相机被倾斜或旋转的情况在调用处单独处理（会先把相机摆正）。
-   */
-  function coordinateAtPoint(point: Point, size: { width: number; height: number }): Coordinate | null {
-    const span = visibleSpan();
-    if (!span || size.width <= 0 || size.height <= 0) return null;
-
-    return {
-      latitude: span.center.latitude + (0.5 - point.y / size.height) * span.latitudeDelta,
-      longitude: span.center.longitude + (point.x / size.width - 0.5) * span.longitudeDelta,
-    };
-  }
-
-  /*
-    这几个 Observable 必须在 **本组件自己的 render 里**读。
-
-    下面的地图内容写在 GeometryReader 的子闭包里，在那里读 `.value` 订阅
-    建立不到本组件身上——表现就是「底部坐标卡在变、地图上的绿箭头不动」
-    （底部卡片在 index.tsx 自己的 render 里读，所以正常）。
-    在这里读一次，闭包里只用这些普通值。
-  */
-  /** 换算不可用（相机是 camera 形态）：点击会落到地图中心，这时把准星露出来。 */
-  const centerPickOnly = cameraPosition.value.camera !== null;
-
   const active = activeLoc.value;
   const pickedLat = coordLat.value;
   const pickedLng = coordLng.value;
 
   return (
     <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
-      <GeometryReader>
-        {(proxy: GeometryProxy) => (
+      {/*
+        MapReader 给出地图自己的投影，点击位置直接换算成坐标。
+
+        这块以前是手算的：从 cameraPosition 反推可视跨度、配合 GeometryReader
+        的尺寸线性插值。问题是回写成哪种相机形态由 MapKit 决定（region / rect /
+        camera / item），camera 形态下连跨度都拿不到，倾斜后更是透视投影、
+        线性插值根本不成立——只能退回选地图中心并弹个准星。
+        现在交给原生做，倾斜、旋转、任意缩放都准。
+      */}
+      <MapReader>
+        {(proxy: MapProxy) => (
           <Map
             cameraPosition={cameraPosition}
             selection={mapSelection}
@@ -234,27 +169,11 @@ export function MapPage({
             frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
             onTapGesture={{
               perform: (location: Point) => {
-                const picked = coordinateAtPoint(location, proxy.size);
-                if (picked) {
-                  onCoordChange(picked.latitude, picked.longitude);
-                  return;
-                }
-
-                /*
-                  算不出「点到哪」：相机是 camera 形态（倾斜、旋转，或系统就这么
-                  回写的），那是透视投影，平面插值不成立。
-
-                  以前是拒绝 + 提示去摆正。但回写成什么形态由 MapKit 决定，摆正后
-                  下次手势可能又变回去，于是提示没完没了——这就是那句话一直冒出来
-                  的原因。
-                  现在退一步：落到**地图中心**。这个值四种形态下都读得到，永远准。
-                  界面上那个准星就是在告诉你会落在哪。
-                */
-                const center = getCoordFromPosition(cameraPosition.value);
-                if (center) {
-                  onCoordChange(center.latitude, center.longitude);
-                  onPickUnavailable();
-                }
+                // 投影暂时取不到（刚挂载、或 reader 已卸载）时返回 null，
+                // 这时什么都不做比给个错坐标强。
+                const picked = proxy.convertPoint(location);
+                if (picked) onCoordChange(picked.latitude, picked.longitude);
+                else onPickUnavailable();
               },
             }}
             controls={
@@ -336,26 +255,7 @@ export function MapPage({
             )}
           </Map>
         )}
-      </GeometryReader>
-
-      {/*
-        准星。
-        只在「点哪选哪」失效时出现（相机被倾斜或旋转），这时点击落到地图中心，
-        准星标的就是那个中心。平时不显示，免得白挡着地图。
-      */}
-      {centerPickOnly ? (
-        <VStack spacing={2} allowsHitTesting={false}>
-          <Image systemName="plus" foregroundStyle="systemRed" font="title2" />
-          <Text
-            font="caption2"
-            foregroundStyle="white"
-            padding={{ vertical: 2, leading: 8, trailing: 8 }}
-            background={{ style: "rgba(0,0,0,0.55)", shape: "capsule" }}
-          >
-            点击选中此处
-          </Text>
-        </VStack>
-      ) : null}
+      </MapReader>
     </ZStack>
   );
 }
