@@ -45,6 +45,16 @@ export interface SimulationState {
   paused: boolean;
   /** 会话开始时间，卡片上显示已持续多久 */
   startedAt: number;
+
+  // ── 灵动岛收起态的外观，全部由设置页决定 ──
+  /** 主色。暂停时一律转橙，提醒优先于好看。 */
+  tint: Color;
+  /** 收起态的图标：SF Symbol 名；为空表示不显示图标 */
+  compactIcon: string;
+  /** compactIcon 是 Emoji 而不是 SF Symbol —— 两者渲染方式不同 */
+  compactIconIsEmoji: boolean;
+  /** 收起态右侧文字，已由界面层算好；为空表示不显示 */
+  compactText: string;
 }
 
 function coordinateText(state: SimulationState): string {
@@ -57,8 +67,27 @@ function statusText(state: SimulationState): string {
   return state.paused ? "已暂停" : "移动中";
 }
 
+/**
+ * 卡片主色。
+ *
+ * 用户选的颜色优先，但**暂停时强制转橙**——这张卡片的首要职责是让你一眼看出
+ * 当前状态，好看要给辨识度让路。
+ */
 function accent(state: SimulationState): Color {
-  return state.paused ? "systemOrange" : "systemGreen";
+  if (state.paused) return "systemOrange";
+  return state.tint || "systemGreen";
+}
+
+/**
+ * 收起态的图标。
+ *
+ * Emoji 要走 Text，SF Symbol 才走 Image——`Image systemName` 只认符号名。
+ * 设置成「不显示」时给一个空白 Text 占位：这几个槽位不接受 null。
+ */
+function CompactIcon(state: SimulationState) {
+  if (!state.compactIcon) return <Text font="caption2"> </Text>;
+  if (state.compactIconIsEmoji) return <Text font="caption">{state.compactIcon}</Text>;
+  return <Image systemName={state.compactIcon} foregroundStyle={accent(state)} />;
 }
 
 /** 速度与进度拼成一行副标题；没有的部分自动省略，不留空字段。 */
@@ -145,23 +174,15 @@ function ContentView(state: SimulationState) {
 const builder: LiveActivityUIBuilder<SimulationState> = (state) => (
   <LiveActivityUI
     content={<ContentView {...state} />}
-    compactLeading={
-      <Image
-        systemName={state.modeIcon || "location.fill"}
-        foregroundStyle={accent(state)}
-      />
-    }
+    compactLeading={<CompactIcon {...state} />}
     compactTrailing={
       <Text font="caption2" foregroundStyle={accent(state)}>
-        {/* 收起态只有一丁点宽度：有进度就给百分比，否则给状态 */}
-        {progress(state) !== null
-          ? `${Math.round((progress(state) ?? 0) * 100)}%`
-          : statusText(state)}
+        {/* 设成「不显示」时给空串，系统会把这一侧收起来 */}
+        {state.compactText}
       </Text>
     }
-    minimal={
-      <Image systemName={state.modeIcon || "location.fill"} foregroundStyle={accent(state)} />
-    }
+    /* 极简态（同时有两个活动时）只有一个图标的位置，emoji 也能放 */
+    minimal={<CompactIcon {...state} />}
   >
     <LiveActivityUIExpandedLeading>
       <VStack alignment="leading" spacing={2}>

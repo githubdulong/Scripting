@@ -1,5 +1,13 @@
 // WLOC 常量定义
-import type { AppSettings, MapLayerId, MenuCorner, TunnelSource } from "./types";
+import type { Color } from "scripting";
+import type {
+  AppSettings,
+  IslandIconMode,
+  IslandTextMode,
+  MapLayerId,
+  MenuCorner,
+  TunnelSource,
+} from "./types";
 
 /** 默认坐标：深圳 */
 export const DEFAULT_COORDINATE = {
@@ -29,6 +37,11 @@ export const DEFAULT_DEVICE_HOST = "10.7.0.1";
 
 /** 默认应用设置 */
 export const DEFAULT_SETTINGS: AppSettings = {
+  islandTint: "systemGreen",
+  islandIcon: "mode",
+  islandEmoji: "📍",
+  islandText: "status",
+  islandCustomText: "",
   menuCorner: "topLeft",
   defaultLayer: "imagery",
   jitterRadius: DEFAULT_JITTER_RADIUS,
@@ -51,6 +64,39 @@ export const LOOPBACK_MODULE_SURGE =
 
 /** 全球搜索的 Worker 源码与部署说明。 */
 export const WORKER_SOURCE_URL = "https://github.com/ios151/wloc";
+
+/** 灵动岛主色可选项。用关键字色，深浅模式会自动跟随。 */
+export const ISLAND_TINT_OPTIONS: { id: Color; label: string }[] = [
+  { id: "systemGreen", label: "绿" },
+  { id: "systemBlue", label: "蓝" },
+  { id: "systemIndigo", label: "靛" },
+  { id: "systemPurple", label: "紫" },
+  { id: "systemPink", label: "粉" },
+  { id: "systemRed", label: "红" },
+  { id: "systemOrange", label: "橙" },
+  { id: "systemYellow", label: "黄" },
+  { id: "systemTeal", label: "青" },
+  { id: "label", label: "随系统" },
+];
+
+/** 灵动岛图标可选项。 */
+export const ISLAND_ICON_OPTIONS: { id: IslandIconMode; label: string; detail: string }[] = [
+  { id: "mode", label: "跟随移动方式", detail: "步行、跑步、骑行、驾车各用各的图标" },
+  { id: "fixed", label: "定位箭头", detail: "始终用同一个箭头" },
+  { id: "emoji", label: "自定义 Emoji", detail: "用下面填的字符，什么都行" },
+  { id: "none", label: "不显示", detail: "只留文字" },
+];
+
+/** 灵动岛文字可选项。 */
+export const ISLAND_TEXT_OPTIONS: { id: IslandTextMode; label: string; detail: string }[] = [
+  { id: "status", label: "状态", detail: "模拟中 / 移动中 / 已暂停" },
+  { id: "place", label: "地点名", detail: "查不到地名时退回坐标" },
+  { id: "coordinate", label: "坐标", detail: "纬度, 经度" },
+  { id: "speed", label: "速度", detail: "定点模拟时不显示" },
+  { id: "progress", label: "路线进度", detail: "百分比，非路线模式不显示" },
+  { id: "custom", label: "自定义文本", detail: "用下面填的内容，可以放 Emoji" },
+  { id: "none", label: "不显示", detail: "只留图标" },
+];
 
 /**
  * 菜单位置可选项。

@@ -1,4 +1,5 @@
 // WLOC 类型定义
+import type { Color } from "scripting";
 
 /** 地理坐标，等价于 MapKit 的 CLLocationCoordinate2D。 */
 export interface Coordinate {
@@ -48,8 +49,33 @@ export type TunnelSource = "builtIn" | "proxyApp";
  */
 export type MenuCorner = "topLeft" | "bottomLeft" | "bottomRight";
 
+/** 灵动岛收起态显示什么文字 */
+export type IslandTextMode =
+  | "status"      // 模拟中 / 移动中 / 已暂停
+  | "place"       // 地点名
+  | "coordinate"  // 坐标
+  | "speed"       // 速度
+  | "progress"    // 路线进度百分比
+  | "custom"      // 自定义文本
+  | "none";
+
+/** 灵动岛收起态的图标来源 */
+export type IslandIconMode =
+  | "mode"   // 跟随移动方式（步行/跑步/骑行/驾车）
+  | "fixed"  // 固定用定位箭头
+  | "emoji"  // 自定义 emoji
+  | "none";
+
 /** 应用持久化设置 */
 export interface AppSettings {
+  /** 灵动岛与锁屏卡片的主色（关键字色名，深浅模式自动跟随） */
+  islandTint: Color;
+  islandIcon: IslandIconMode;
+  /** islandIcon 为 emoji 时用的字符 */
+  islandEmoji: string;
+  islandText: IslandTextMode;
+  /** islandText 为 custom 时用的文本 */
+  islandCustomText: string;
   /** 功能菜单落在哪个角 */
   menuCorner: MenuCorner;
   /** 默认地图图层 */

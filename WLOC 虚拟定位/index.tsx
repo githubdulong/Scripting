@@ -55,7 +55,7 @@ import { applyJitter, fromDeviceCoordinate, parseAndConvert, toDeviceCoordinate 
 import { loadPairing, type PairingRecord } from "./core/pairing";
 import { debugLog, describeError } from "./core/debug";
 import { restoreRealLocation, startLocationSession, type LocationSessionHandle } from "./core/session";
-import { defaultSpeed, joystickStep, modeInfo, PathWalker } from "./core/movement";
+import { defaultSpeed, joystickStep, modeInfo, PathWalker, type WalkState } from "./core/movement";
 import { parseGPX } from "./core/gpx";
 import { DEFAULT_GLOBAL_ENDPOINT } from "./api/searchApi";
 import { SimulationLiveActivity, type SimulationState } from "./live_activity";
@@ -616,7 +616,54 @@ function App() {
       leg: (walk?.leg ?? 0) + 1,
       paused: walk?.paused ?? false,
       startedAt: sessionStartedAt.current,
+      tint: settings.islandTint,
+      compactIcon: islandIcon(moving ? info.systemImage : ""),
+      compactIconIsEmoji: settings.islandIcon === "emoji",
+      compactText: islandText(point, walk),
     };
+  }
+
+  /** 收起态图标：按设置决定用方式图标、固定箭头、Emoji 还是不显示。 */
+  function islandIcon(modeIcon: string): string {
+    switch (settings.islandIcon) {
+      case "mode":
+        return modeIcon || "location.fill";
+      case "fixed":
+        return "location.fill";
+      case "emoji":
+        return settings.islandEmoji.trim() || "📍";
+      case "none":
+        return "";
+    }
+  }
+
+  /**
+   * 收起态文字。
+   *
+   * 灵动岛那一条只有很窄一点宽度，所以这里都是短句，长了系统会截断。
+   * 选了某项但当前场景没有对应数据（比如定点模拟选「速度」）时返回空串，
+   * 卡片那边会直接不画，不会留一截空白。
+   */
+  function islandText(point: Coordinate, walk?: WalkState): string {
+    const ratio = walk && walk.total > 0 ? walk.travelled / walk.total : null;
+    switch (settings.islandText) {
+      case "status":
+        return movementKind === "none" ? "模拟中" : walk?.paused ? "已暂停" : "移动中";
+      case "place":
+        return placeName || `${point.latitude.toFixed(3)}, ${point.longitude.toFixed(3)}`;
+      case "coordinate":
+        return `${point.latitude.toFixed(3)}, ${point.longitude.toFixed(3)}`;
+      case "speed":
+        return movementKind === "none"
+          ? ""
+          : `${(selection.speed.metresPerSecond * 3.6).toFixed(1)}`;
+      case "progress":
+        return ratio === null ? "" : `${Math.round(ratio * 100)}%`;
+      case "custom":
+        return settings.islandCustomText.trim();
+      case "none":
+        return "";
+    }
   }
 
   /**

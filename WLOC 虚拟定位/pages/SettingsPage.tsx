@@ -23,6 +23,9 @@ import type { AppSettings, MapLayerId, TunnelSource } from "../types";
 import {
   DEFAULT_DEVICE_HOST,
   DEFAULT_SETTINGS,
+  ISLAND_ICON_OPTIONS,
+  ISLAND_TEXT_OPTIONS,
+  ISLAND_TINT_OPTIONS,
   JITTER_OPTIONS,
   LOOPBACK_MODULE_LOON,
   LOOPBACK_MODULE_SURGE,
@@ -162,6 +165,84 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
         >
           {link("Loon 模块（.lpx）", LOOPBACK_MODULE_LOON, "l.circle")}
           {link("Surge 模块（.sgmodule）", LOOPBACK_MODULE_SURGE, "s.circle")}
+        </Section>
+
+        {/*
+          灵动岛收起态只有很窄一条，装不下几个字，所以这里只调「图标 + 一句话」。
+          锁屏展开后的完整卡片内容是固定的，不跟着这里变。
+        */}
+        <Section
+          header={<Text>灵动岛样式</Text>}
+          footer={
+            <Text foregroundStyle="tertiaryLabel">
+              只影响灵动岛收起时那一条。暂停移动时颜色会强制转橙——
+              一眼看出状态比好看要紧。
+            </Text>
+          }
+        >
+          <HStack frame={{ maxWidth: "infinity" }} spacing={8} padding={{ vertical: 2 }}>
+            {ISLAND_TINT_OPTIONS.map((opt) => (
+              <Button key={opt.id} action={() => update({ islandTint: opt.id })}>
+                <Image
+                  systemName={
+                    current.islandTint === opt.id ? "checkmark.circle.fill" : "circle.fill"
+                  }
+                  foregroundStyle={opt.id === "label" ? "label" : opt.id}
+                  font="title3"
+                />
+              </Button>
+            ))}
+          </HStack>
+
+          {ISLAND_ICON_OPTIONS.map((opt) => (
+            <Button key={opt.id} action={() => update({ islandIcon: opt.id })}>
+              <HStack frame={{ maxWidth: "infinity" }} spacing={10} alignment="top">
+                <Image
+                  systemName={current.islandIcon === opt.id ? "largecircle.fill.circle" : "circle"}
+                  foregroundStyle={current.islandIcon === opt.id ? "systemBlue" : "secondaryLabel"}
+                  frame={{ width: 22 }}
+                />
+                <VStack alignment="leading" spacing={2}>
+                  <Text foregroundStyle="label">{opt.label}</Text>
+                  <Text font="caption2" foregroundStyle="secondaryLabel">{opt.detail}</Text>
+                </VStack>
+                <Spacer />
+              </HStack>
+            </Button>
+          ))}
+          {current.islandIcon === "emoji" ? (
+            <TextField
+              title=""
+              value={current.islandEmoji}
+              onChanged={(value: string) => update({ islandEmoji: value })}
+              prompt="📍 任意 Emoji 或文字"
+            />
+          ) : null}
+
+          {ISLAND_TEXT_OPTIONS.map((opt) => (
+            <Button key={opt.id} action={() => update({ islandText: opt.id })}>
+              <HStack frame={{ maxWidth: "infinity" }} spacing={10} alignment="top">
+                <Image
+                  systemName={current.islandText === opt.id ? "largecircle.fill.circle" : "circle"}
+                  foregroundStyle={current.islandText === opt.id ? "systemBlue" : "secondaryLabel"}
+                  frame={{ width: 22 }}
+                />
+                <VStack alignment="leading" spacing={2}>
+                  <Text foregroundStyle="label">{opt.label}</Text>
+                  <Text font="caption2" foregroundStyle="secondaryLabel">{opt.detail}</Text>
+                </VStack>
+                <Spacer />
+              </HStack>
+            </Button>
+          ))}
+          {current.islandText === "custom" ? (
+            <TextField
+              title=""
+              value={current.islandCustomText}
+              onChanged={(value: string) => update({ islandCustomText: value })}
+              prompt="想显示的文字，短一点"
+            />
+          ) : null}
         </Section>
 
         <Section
