@@ -259,8 +259,9 @@ https://www.scripting.fun/import_scripts/?urls=<URL 编码的 JSON 数组>
 - **步频 / 步数做不了**。`LocationSimulation` 只有
   `simulateLocationWithLatitude:longitude:`，步数属于 CMPedometer / HealthKit，
   硬件层面隔离。原生实现同样没有。
-- **代理工具提供的回环不被接受**。`openRSDTunnel` 读的是 Scripting 自身的反射
-  状态，不认别人提供的。已反馈给应用作者。
+- **代理工具模式要点**：自身隧道会是 inactive（回环由代理提供），**不要拿它当
+  拦截条件**；同时要打开 `LocalDevVPN` 开关但**不要**启动 Scripting 自己的 VPN——
+  前者是 `openRSDTunnel` 的前提，后者会抢掉代理工具的 VPN 名额。两件事都栽过。
 - **隧道开着时系统的地理编码可能出不去**。iOS 同时只允许一条 VPN，本机回环占着
   那个名额。想要地名的话，**先选点等地名查出来，再开始模拟**——结果有缓存。
 - **iPhone 重启后要重新配对**。配对授权是内存态。

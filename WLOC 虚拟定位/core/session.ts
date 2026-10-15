@@ -93,6 +93,24 @@ async function ensureTunnelReady(endpoint: TunnelEndpoint, log: StatusReporter):
       );
     }
 
+    /*
+      LocalDevVPN 这个开关要打开，但**不要启动 Scripting 自己的 VPN**。
+
+      原生那句报错要的是两样东西：this app's VPN 和 LocalDevVPN。代理模式下
+      前者必须让给代理工具，后者只是个功能开关——开着它不会去抢 VPN 名额，
+      却是 openRSDTunnel 的前提之一。以前这里一个都没碰，等于少开了一半。
+    */
+    if (!state.enabled) {
+      log("启用 LocalDevVPN 开关…");
+      try {
+        const next = await VPN.localDevVPN.setEnabled(true, { expectedState: state.expectedState });
+        debugLog("vpn", "代理模式下已打开 LocalDevVPN", JSON.stringify(next));
+      } catch (error) {
+        debugLog("vpn", "打开 LocalDevVPN 失败", describeError(error));
+        log("LocalDevVPN 开关打不开，仍继续尝试…");
+      }
+    }
+
     log("检查代理工具提供的回环地址…");
     // 不逐个扫端口，只确认对端地址有响应——配对端口随后会扫。
     const reachable = await probeTCP(endpoint.host, PORT_RANGE_START, 1500);
@@ -373,24 +391,20 @@ async function openTunnelWithDiagnostics(
 ): Promise<VPNRSDTunnel> {
   let lastError: unknown = null;
 
-  // openRSDTunnel 读的是 Scripting **自身**的隧道状态，不认别人提供的回环。
-  // 代理工具模式下这里必定不满足，与其让原生那句英文原文漏到界面上
-  // （"Turn on this app's VPN and LocalDevVPN…"，看着像是用户漏开了什么开关），
-  // 不如提前说清楚：这是接口本身的限制，不是配置错了。
+  /*
+    开隧道之前先看一眼自身状态，但**只在「Scripting 自身」模式下据此拦截**。
+
+    代理工具模式下自身隧道本来就是 inactive（回环由代理提供），拿它当拦截条件
+    等于永远不让试。这里以前真的拦了——应用后来支持了代理提供的回环，
+    结果还是弹我们自己那句「只接受 Scripting 自己的回环」，用户以为是应用没改。
+    现在代理模式下只记一笔就放行，成不成交给 openRSDTunnel 自己说。
+  */
   const preflight = await VPN.localDevVPN.getState();
-  if (preflight.effectiveStatus !== "active") {
-    debugLog("tunnel", "开隧道前自身状态不满足", JSON.stringify(preflight));
-    if (endpoint.source === "proxyApp") {
-      throw new Error(
-        "当前的隧道接口只接受 Scripting 自己的回环，不认代理工具提供的那条。\n" +
-          `自身隧道现在是 ${preflight.effectiveStatus}（VPN ${preflight.vpnStatus}）。\n\n` +
-          "请到设置里把「隧道来源」改成「Scripting 自身」再试——" +
-          "它会顶掉正在运行的代理工具，这是目前唯一能走通的方式。\n" +
-          "（配对与申请监听都已成功，差的只是这一步。）",
-      );
-    }
+  debugLog("tunnel", `开隧道前自身状态（来源=${endpoint.source}）`, JSON.stringify(preflight));
+  if (endpoint.source === "builtIn" && preflight.effectiveStatus !== "active") {
     throw new Error(
-      `本机隧道尚未生效（${preflight.effectiveStatus}，VPN ${preflight.vpnStatus}）。\n` +
+      `本机隧道尚未生效（${preflight.effectiveStatus}，VPN ${preflight.vpnStatus}）。
+` +
         "请确认 Scripting 已获得 VPN 权限，且系统里没有别的 VPN 占着。",
     );
   }
@@ -453,16 +467,16 @@ async function openLocationChannel(
   debugLog("vpn", `隧道来源=${endpoint.source} 对端=${endpoint.host}`);
   await ensureTunnelReady(endpoint, log);
 
-  // openRSDTunnel 要求「已生效的数字 IPv4 反射地址」，而它读的是 Scripting 自身的
-  // 反射状态。由代理工具提供反射时这里必然对不上，先记一笔，真被拒时好对照。
+  // 自身的反射地址只作记录。2026-10-16 实测：代理工具模式下自身隧道 inactive、
+  // effectiveAddresses 为空，openRSDTunnel 照样能建起来——它已经不要求对端地址
+  // 出现在自己的反射列表里了。所以这里不再当成「可能被拒」的征兆。
   const vpnState = await VPN.localDevVPN.getState();
   debugLog("vpn", "自身生效地址", JSON.stringify(vpnState.effectiveAddresses));
   if (!vpnState.effectiveAddresses.some((address) => address.split("/")[0] === endpoint.host)) {
     debugLog(
       "vpn",
-      `注意：${endpoint.host} 不在 Scripting 自身隧道的生效地址里` +
-        `（来源=${endpoint.source}），openRSDTunnel 可能因此拒绝`,
-      JSON.stringify(vpnState),
+      `${endpoint.host} 不在自身隧道的生效地址里（来源=${endpoint.source}）——` +
+        "代理模式下本就如此，不影响建立隧道",
     );
   }
 
