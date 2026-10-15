@@ -1,0 +1,47 @@
+{
+  "contributors": [
+    {
+      "name": "BlackCCCat",
+      "email": null,
+      "homepage": "https://github.com/BlackCCCat/Scripting-Scripts"
+    }
+  ],
+  "version": "2.0.0",
+  "localizedNames": {
+    "fr": "",
+    "pt": "",
+    "ru": "",
+    "zh": "WLOC 虚拟定位",
+    "en": "WLOC",
+    "ja": "",
+    "de": "",
+    "es": "",
+    "it": ""
+  },
+  "name": "WLOC 虚拟定位",
+  "color": "rgba(52, 199, 89,1)",
+  "entry": "index.tsx",
+  "permissions": ["vpn", "localDevVPN", "location"],
+  "author": {
+    "name": "ios151",
+    "email": null,
+    "homepage": "https://github.com/ios151"
+  },
+  "localizedDescriptions": {
+    "fr": "",
+    "pt": "",
+    "ru": "",
+    "zh": "用苹果官方开发者接口模拟本机定位。界面基于 BlackCCCat 的同名脚本",
+    "en": "Simulate this device's location via Apple's developer interface. UI based on BlackCCCat's script",
+    "ja": "",
+    "de": "",
+    "es": "",
+    "it": ""
+  },
+  "intentInputTypes": [],
+  "description": null,
+  "iconImage": null,
+  "icon": "location.fill.viewfinder",
+  "runInApp": true,
+  "remoteResource": null
+}

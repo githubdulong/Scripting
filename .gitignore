@@ -1,0 +1,11 @@
+# Scripting 应用自带的类型定义，属于应用作者，不随本仓库分发。
+# 克隆后从 Scripting 的工作区复制进来即可类型检查。
+/dts/
+
+node_modules/
+*.log
+.DS_Store
+
+# 配对记录：等同于本机的调试授权，任何情况下都不要提交
+*.mobiledevicepairing
+pairing*.plist
