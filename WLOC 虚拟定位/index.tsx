@@ -1409,7 +1409,7 @@ function App() {
         jitterRadius={settings.jitterRadius}
         drawnPath={drawnPath}
         onCoordChange={handleCoordChange}
-        onPickUnavailable={() => fireToast("已把视角摆正，再点一次即可选点")}
+        onPickUnavailable={() => fireToast("3D/旋转视角下按准星落点，想精确点选请先回正")}
       />
 
       <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} alignment="leading">
