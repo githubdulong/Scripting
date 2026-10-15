@@ -240,7 +240,7 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
             <Text font="caption2" foregroundStyle="tertiaryLabel">常用</Text>
             <Spacer />
             {ISLAND_TINT_OPTIONS.map((opt) => (
-              <Button key={opt.id} action={() => update({ islandTint: opt.id })}>
+              <Button key={`tint-${opt.id}`} action={() => update({ islandTint: opt.id })}>
                 <Image
                   systemName={
                     current.islandTint === opt.id ? "checkmark.circle.fill" : "circle.fill"
@@ -253,7 +253,8 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
           </HStack>
 
           {ISLAND_ICON_OPTIONS.map((opt) => (
-            <Button key={opt.id} action={() => update({ islandIcon: opt.id })}>
+            // 和下面的文字选项同处一个 Section，两边都有 "none"，key 要加前缀
+            <Button key={`icon-${opt.id}`} action={() => update({ islandIcon: opt.id })}>
               <HStack frame={{ maxWidth: "infinity" }} spacing={10} alignment="top">
                 <Image
                   systemName={current.islandIcon === opt.id ? "largecircle.fill.circle" : "circle"}
@@ -278,7 +279,7 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
           ) : null}
 
           {ISLAND_TEXT_OPTIONS.map((opt) => (
-            <Button key={opt.id} action={() => update({ islandText: opt.id })}>
+            <Button key={`text-${opt.id}`} action={() => update({ islandText: opt.id })}>
               <HStack frame={{ maxWidth: "infinity" }} spacing={10} alignment="top">
                 <Image
                   systemName={current.islandText === opt.id ? "largecircle.fill.circle" : "circle"}

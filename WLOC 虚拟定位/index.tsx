@@ -122,6 +122,8 @@ function App() {
   const drawnRef = useRef<Coordinate[]>([]);
   /** 正在自动重连，挡住重连过程中再次触发的掉线回调。 */
   const reconnecting = useRef(false);
+  /** 反查过的地名。空串表示查过但没有结果，避免对同一个点反复请求。 */
+  const placeCache = useRef(new Map<string, string>());
   const walker = useObservable<PathWalker | null>(null);
   const movementTimer = useObservable<ReturnType<typeof setInterval> | null>(null);
   const joystickVector = useObservable({ dx: 0, dy: 0 });
@@ -286,24 +288,37 @@ function App() {
    * 查不到就算了，卡片退回显示坐标，不影响模拟。
    */
   async function resolvePlaceName(lat: number, lng: number): Promise<void> {
+    // 查过的点直接用缓存。反查有频率限制，来回点同几个位置时不该重复请求。
+    const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
+    const cached = placeCache.current.get(key);
+    if (cached !== undefined) {
+      if (cached) setPlaceName(cached);
+      return;
+    }
+
     // 反查要用设备坐标系（WGS-84），地图上拿到的是地图系，先换过去。
     const wgs = toDeviceCoordinate(lat, lng);
 
-    // 反查要联网，偶尔会抛 kCLErrorDomain 2（网络不可用）。等一下再试一次就好，
-    // 不必把这种瞬时失败摆到用户面前。再失败就放弃——系统的地理编码有频率限制，
-    // 一直重试只会让它更不愿意理你。
+    /*
+      反查要联网，常见失败是 kCLErrorDomain 2（网络不可用）。
+      开着「Scripting 自身」的隧道时尤其容易——iOS 同时只允许一条 VPN，
+      本机回环占着那个名额，系统的地理编码未必出得去。
+      只重试一次：多试反而会被频率限制拒得更久。
+    */
     const lookup = async () =>
       await Location.reverseGeocode({ latitude: wgs.latitude, longitude: wgs.longitude });
 
     try {
-      let marks = await lookup().catch(async (error) => {
-        debugLog("geocode", "首次反查失败，1.5 秒后重试", describeError(error));
+      const marks = await lookup().catch(async () => {
         await delay(1500);
         return await lookup();
       });
 
       const mark = marks?.[0];
-      if (!mark) return;
+      if (!mark) {
+        placeCache.current.set(key, "");
+        return;
+      }
 
       // name 往往已经是「××路123号」这类完整说法，优先用它；
       // 没有就拿街道 + 子区域拼，两者都没有才退回区县。
@@ -314,13 +329,16 @@ function App() {
         "";
       if (!label) return;
 
+      placeCache.current.set(key, label);
       // 期间用户可能又点了别处，坐标对不上就丢弃这次结果。
       if (coordLat.value !== lat || coordLng.value !== lng) return;
       debugLog("geocode", `${lat.toFixed(5)}, ${lng.toFixed(5)} → ${label}`);
       setPlaceName(label);
       setHistory(addHistory(label, lat, lng));
     } catch (error) {
-      debugLog("geocode", "反查地名失败", describeError(error));
+      // 查不到不影响模拟，卡片退回显示坐标即可。记一笔免得对同一个点反复请求。
+      placeCache.current.set(key, "");
+      debugLog("geocode", `${key} 查不到地名（隧道开着时常见）`, describeError(error));
     }
   }
 
