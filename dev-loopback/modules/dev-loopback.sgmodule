@@ -1,0 +1,11 @@
+#!name=Local Device Loopback
+#!desc=Reflect 10.7.0.1 back to this device for on-device developer tools.
+#!icon=https://raw.githubusercontent.com/ios151/Scripting/main/dev-loopback/modules/dev-loopback.png
+#!author=bb
+
+[General]
+ipv6-vif = auto // 强制给 tun 配 IPv6 地址；关蜂窝后接口仍有地址，才可能不被判为无网络、隧道不暂停
+tun-included-routes = %INSERT% 10.7.0.1/32
+
+[IP Rewrite]
+10.7.0.1 = reflect

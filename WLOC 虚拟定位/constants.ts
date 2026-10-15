@@ -38,6 +38,17 @@ export const DEFAULT_SETTINGS: AppSettings = {
   globalSearchEndpoint: "",
 };
 
+/**
+ * 代理工具用的回环模块。
+ *
+ * 隧道来源选「代理工具提供」时，得让代理工具把对端地址反射回本机。
+ * 照文档手写容易漏掉 IPv6 那一项，装现成模块省事。
+ */
+export const LOOPBACK_MODULE_LOON =
+  "https://raw.githubusercontent.com/ios151/Scripting/main/dev-loopback/modules/dev-loopback.lpx";
+export const LOOPBACK_MODULE_SURGE =
+  "https://raw.githubusercontent.com/ios151/Scripting/main/dev-loopback/modules/dev-loopback.sgmodule";
+
 /** 全球搜索的 Worker 源码与部署说明。 */
 export const WORKER_SOURCE_URL = "https://github.com/ios151/wloc";
 

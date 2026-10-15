@@ -24,6 +24,8 @@ import {
   DEFAULT_DEVICE_HOST,
   DEFAULT_SETTINGS,
   JITTER_OPTIONS,
+  LOOPBACK_MODULE_LOON,
+  LOOPBACK_MODULE_SURGE,
   MAP_LAYER_OPTIONS,
   MENU_CORNER_OPTIONS,
   TUNNEL_SOURCE_OPTIONS,
@@ -45,6 +47,20 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
     const next = { ...current, ...patch };
     setCurrent(next);
     onChange(next);
+  }
+
+  /** 外链行：点一下用 Safari 打开。 */
+  function link(title: string, url: string, systemImage: string) {
+    return (
+      <Button action={() => void Safari.openURL(url)}>
+        <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
+          <Image systemName={systemImage} foregroundStyle="systemBlue" frame={{ width: 22 }} />
+          <Text foregroundStyle="label">{title}</Text>
+          <Spacer />
+          <Image systemName="arrow.up.right.square" foregroundStyle="tertiaryLabel" font="caption" />
+        </HStack>
+      </Button>
+    );
   }
 
   function handleReset() {
@@ -122,6 +138,30 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
             prompt={DEFAULT_DEVICE_HOST}
             keyboardType="numbersAndPunctuation"
           />
+        </Section>
+
+        {/*
+          代理工具侧的回环配置。
+          自己照着文档写一遍很容易漏掉 IPv6 那一项（关蜂窝后接口没地址会被判成
+          无网络，隧道直接暂停），所以直接给现成模块。
+        */}
+        <Section
+          header={<Text>代理工具的回环模块</Text>}
+          footer={
+            <Text foregroundStyle="tertiaryLabel">
+              隧道来源选「代理工具提供」时，需要让代理工具把 {DEFAULT_DEVICE_HOST} 的流量
+              反射回本机。上面两个是现成模块，装上即可。
+              {"\n\n"}
+              Egern 也支持同样的能力，写法见它自己的文档。
+              Quantumult X 据称也可以，但具体写法未经验证，这里不提供模块。
+              {"\n\n"}
+              自己写的话要点有两个：把 {DEFAULT_DEVICE_HOST}/32 划进 TUN 的包含路由，
+              再把该地址设为 reflect（回环到本机）。
+            </Text>
+          }
+        >
+          {link("Loon 模块（.lpx）", LOOPBACK_MODULE_LOON, "l.circle")}
+          {link("Surge 模块（.sgmodule）", LOOPBACK_MODULE_SURGE, "s.circle")}
         </Section>
 
         <Section
