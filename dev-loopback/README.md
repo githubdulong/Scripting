@@ -5,10 +5,13 @@
 WLOC 虚拟定位把「隧道来源」设为「代理工具提供」时需要它——否则就得用 Scripting
 自身的 VPN，而那会顶掉正在运行的代理工具（iOS 同时只允许一条 VPN 生效）。
 
-| 工具 | 文件 |
+| 工具 | 模块地址（在手机上长按复制，或直接点开） |
 |---|---|
-| Loon | [`modules/dev-loopback.lpx`](modules/dev-loopback.lpx) |
-| Surge | [`modules/dev-loopback.sgmodule`](modules/dev-loopback.sgmodule) |
+| Loon | [`dev-loopback.lpx`](https://raw.githubusercontent.com/ios151/Scripting/main/dev-loopback/modules/dev-loopback.lpx) |
+| Surge | [`dev-loopback.sgmodule`](https://raw.githubusercontent.com/ios151/Scripting/main/dev-loopback/modules/dev-loopback.sgmodule) |
+
+在代理工具里新建模块、粘贴上面的地址即可。脚本的「设置 → 代理工具的回环模块」
+里也能直接复制这两个地址。
 
 两边都是同样两件事：把 `10.7.0.1/32` 划进 TUN 的包含路由，再把该地址设为
 `reflect`。参数名不同——Loon 是 `include-tun`，Surge 是 `tun-included-routes`。

@@ -207,11 +207,18 @@ python build-release.py
 - **不要设 `autoUpdateInterval`** ——会按间隔自动覆盖设备上的脚本，开发期间很坑
 - 改了代码记得把 `version` 往上提，否则用户看不出有更新
 
-安装链接：
+安装链接的拼法：
 
 ```
-https://www.scripting.fun/import_scripts/?urls=<URL编码的JSON数组>
+https://www.scripting.fun/import_scripts/?urls=<URL 编码的 JSON 数组>
 ```
+
+数组元素是 zip 的 **raw 地址**，可以一次塞多个。本仓库当前的链接：
+
+[https://www.scripting.fun/import_scripts/?urls=%5B%22https%3A%2F%2Fraw.githubusercontent.com%2Fios151%2FScripting%2Fmain%2Fdist%2FWLOC.zip%22%5D](https://www.scripting.fun/import_scripts/?urls=%5B%22https%3A%2F%2Fraw.githubusercontent.com%2Fios151%2FScripting%2Fmain%2Fdist%2FWLOC.zip%22%5D)
+
+换了 zip 名字或仓库路径之后记得把 README 里那个链接一起改——
+它是用户唯一的安装入口，改漏了就是 404。
 
 ---
 

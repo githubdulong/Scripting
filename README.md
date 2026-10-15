@@ -4,7 +4,12 @@
 
 脚本目录直接放仓库根，发布产物在 `dist/`。
 
-## WLOC 虚拟定位 2.0.0
+## WLOC 虚拟定位 2.1.0
+
+### ⬇️ [点此一键安装](https://www.scripting.fun/import_scripts/?urls=%5B%22https%3A%2F%2Fraw.githubusercontent.com%2Fios151%2FScripting%2Fmain%2Fdist%2FWLOC.zip%22%5D)
+
+**在 iPhone / iPad 上用 Safari 打开这个链接**，会直接唤起 Scripting 导入。
+在电脑上点是没用的——那台机器上没有 Scripting。
 
 用苹果官方的开发者接口模拟本机定位，与 Xcode 的 Simulate Location 走同一套机制，不涉及证书、代理改写或系统文件。
 
@@ -31,11 +36,22 @@
 
 ### 安装
 
+**[⬇️ 一键安装 WLOC 虚拟定位](https://www.scripting.fun/import_scripts/?urls=%5B%22https%3A%2F%2Fraw.githubusercontent.com%2Fios151%2FScripting%2Fmain%2Fdist%2FWLOC.zip%22%5D)** —— 在 iOS 设备上用 Safari 打开。
+
+链接长这样：
+
 ```
-https://www.scripting.fun/import_scripts/?urls=%5B%22https%3A%2F%2Fraw.githubusercontent.com%2Fios151%2FScripting%2Fmain%2Fdist%2FWLOC.zip%22%5D
+https://www.scripting.fun/import_scripts/?urls=<URL 编码的 JSON 数组>
 ```
 
-`urls` 是一个经过 URL 编码的 JSON 数组，可以一次塞多个 zip。
+`urls` 是一个经过 URL 编码的 JSON 数组，可以一次塞多个 zip 地址。
+本仓库的产物地址是：
+
+```
+https://raw.githubusercontent.com/ios151/Scripting/main/dist/WLOC.zip
+```
+
+装好之后脚本会自己从这个地址检查更新（`script.json` 的 `remoteResource`）。
 
 ### 发布
 
