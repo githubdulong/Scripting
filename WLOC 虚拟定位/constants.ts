@@ -2,6 +2,7 @@
 import type { Color } from "scripting";
 import type {
   AppSettings,
+  CardTitleMode,
   IslandIconMode,
   IslandTextMode,
   MapLayerId,
@@ -37,6 +38,8 @@ export const DEFAULT_DEVICE_HOST = "10.7.0.1";
 
 /** 默认应用设置 */
 export const DEFAULT_SETTINGS: AppSettings = {
+  cardTitle: "place",
+  cardCustomTitle: "",
   islandTint: "systemGreen",
   islandIcon: "mode",
   islandEmoji: "📍",
@@ -64,6 +67,13 @@ export const LOOPBACK_MODULE_SURGE =
 
 /** 全球搜索的 Worker 源码与部署说明。 */
 export const WORKER_SOURCE_URL = "https://github.com/ios151/wloc";
+
+/** 锁屏卡片大标题可选项。 */
+export const CARD_TITLE_OPTIONS: { id: CardTitleMode; label: string; detail: string }[] = [
+  { id: "place", label: "地点名", detail: "查不到地名时退回坐标" },
+  { id: "coord", label: "坐标", detail: "始终显示经纬度" },
+  { id: "custom", label: "自定义文本", detail: "用下面填的内容，可以放 Emoji" },
+];
 
 /** 灵动岛主色可选项。用关键字色，深浅模式会自动跟随。 */
 export const ISLAND_TINT_OPTIONS: { id: Color; label: string }[] = [

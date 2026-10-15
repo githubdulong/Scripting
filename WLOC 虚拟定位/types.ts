@@ -66,8 +66,18 @@ export type IslandIconMode =
   | "emoji"  // 自定义 emoji
   | "none";
 
+/** 锁屏卡片的大标题显示什么 */
+export type CardTitleMode =
+  | "place"   // 地点名，查不到退回坐标
+  | "coord"   // 始终坐标
+  | "custom"; // 自定义文本
+
 /** 应用持久化设置 */
 export interface AppSettings {
+  /** 锁屏卡片大标题 */
+  cardTitle: CardTitleMode;
+  /** cardTitle 为 custom 时用的文本 */
+  cardCustomTitle: string;
   /** 灵动岛与锁屏卡片的主色（关键字色名，深浅模式自动跟随） */
   islandTint: Color;
   islandIcon: IslandIconMode;

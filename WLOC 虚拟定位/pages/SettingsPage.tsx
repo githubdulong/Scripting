@@ -25,6 +25,7 @@ import type { AppSettings, MapLayerId, TunnelSource } from "../types";
 import {
   DEFAULT_DEVICE_HOST,
   DEFAULT_SETTINGS,
+  CARD_TITLE_OPTIONS,
   ISLAND_ICON_OPTIONS,
   ISLAND_TEXT_OPTIONS,
   ISLAND_TINT_OPTIONS,
@@ -189,6 +190,45 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
           {link("Surge 模块（.sgmodule）", LOOPBACK_MODULE_SURGE, "s.circle")}
         </Section>
 
+        <Section
+          header={<Text>锁屏卡片标题</Text>}
+          footer={
+            <Text foregroundStyle="tertiaryLabel">
+              卡片最上面那行大字。坐标始终显示在它下面，所以这里选「坐标」时
+              只会留一行，不会重复。
+            </Text>
+          }
+        >
+          {CARD_TITLE_OPTIONS.map((opt) => (
+            <Button
+              key={`card-${opt.id}`}
+              buttonStyle="borderless"
+              action={() => update({ cardTitle: opt.id })}
+            >
+              <HStack frame={{ maxWidth: "infinity" }} spacing={10} alignment="top">
+                <Image
+                  systemName={current.cardTitle === opt.id ? "largecircle.fill.circle" : "circle"}
+                  foregroundStyle={current.cardTitle === opt.id ? "systemBlue" : "secondaryLabel"}
+                  frame={{ width: 22 }}
+                />
+                <VStack alignment="leading" spacing={2}>
+                  <Text foregroundStyle="label">{opt.label}</Text>
+                  <Text font="caption2" foregroundStyle="secondaryLabel">{opt.detail}</Text>
+                </VStack>
+                <Spacer />
+              </HStack>
+            </Button>
+          ))}
+          {current.cardTitle === "custom" ? (
+            <TextField
+              title=""
+              value={current.cardCustomTitle}
+              onChanged={(value: string) => update({ cardCustomTitle: value })}
+              prompt="想显示的标题"
+            />
+          ) : null}
+        </Section>
+
         {/*
           灵动岛收起态只有很窄一条，装不下几个字，所以这里只调「图标 + 一句话」。
           锁屏展开后的完整卡片内容是固定的，不跟着这里变。
@@ -240,7 +280,13 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
             <Text font="caption2" foregroundStyle="tertiaryLabel">常用</Text>
             <Spacer />
             {ISLAND_TINT_OPTIONS.map((opt) => (
-              <Button key={`tint-${opt.id}`} action={() => update({ islandTint: opt.id })}>
+              // 必须 borderless：List 的一行默认整行是一个点击目标，
+              // 同一行里放多个 Button 的话只有最后一个会响应（之前就是只能选到白色）。
+              <Button
+                key={`tint-${opt.id}`}
+                buttonStyle="borderless"
+                action={() => update({ islandTint: opt.id })}
+              >
                 <Image
                   systemName={
                     current.islandTint === opt.id ? "checkmark.circle.fill" : "circle.fill"

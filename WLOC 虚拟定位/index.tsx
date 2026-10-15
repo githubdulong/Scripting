@@ -660,8 +660,7 @@ function App() {
     // 摇杆是手推的，没有「总长」可言；沿路线/手绘才有进度。
     const walk = movementKind === "route" ? walker.value?.state : undefined;
     return {
-      // 没查到地名时标题留空，卡片那边会只显示坐标，不会出现两行一样的
-      place: placeName,
+      place: cardTitle(conf),
       latitude: point.latitude,
       longitude: point.longitude,
       mode: moving ? (movementKind === "joystick" ? `摇杆 · ${info.label}` : info.label) : "",
@@ -677,6 +676,24 @@ function App() {
       compactIconIsEmoji: conf.islandIcon === "emoji",
       compactText: islandText(point, walk, conf),
     };
+  }
+
+  /**
+   * 锁屏卡片的大标题。
+   *
+   * 留空时卡片那边只显示坐标，不会出现两行一模一样的坐标。
+   * 地名要反向地理编码，开着本机隧道时经常查不到（见 resolvePlaceName），
+   * 所以「地点名」实际上常常退回坐标——想固定显示别的就选自定义。
+   */
+  function cardTitle(conf: AppSettings): string {
+    switch (conf.cardTitle) {
+      case "place":
+        return placeName;
+      case "coord":
+        return "";
+      case "custom":
+        return conf.cardCustomTitle.trim();
+    }
   }
 
   /** 收起态图标：按设置决定用方式图标、固定箭头、Emoji 还是不显示。 */
