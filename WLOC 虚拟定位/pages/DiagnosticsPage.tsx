@@ -176,7 +176,7 @@ export function DiagnosticsPage() {
             <Text font="caption">② iPhone 重启后系统侧的配对授权会失效，去「配对」页重新配一次（不必重启脚本）</Text>
             <Text font="caption">③ iOS 同时只允许一条 VPN 生效，代理和 Scripting 自身的隧道会互相顶掉</Text>
             <Text font="caption">④ 选「代理工具提供」时，代理那边要把 tun 的 loopback-address 配成对端地址</Text>
-            <Text font="caption">⑤ 代理模式下先看「当前 VPN」那行——代理工具没在连，后面全白搭</Text>
+            <Text font="caption">⑤ 代理模式下代理工具要自己确认是否在运行——iOS 不让应用读别家的 VPN，这里看不出来</Text>
           </VStack>
         </Section>
       </List>

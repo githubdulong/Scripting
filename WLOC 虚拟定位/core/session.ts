@@ -314,28 +314,29 @@ export async function collectDiagnostics(options: {
   }
 
   /*
-    当前占着 VPN 名额的是谁。
+    Scripting 自己那条 VPN 的状态。
 
-    代理模式下这是最该先看的一行：回环由代理工具提供，它没在跑的话后面全白搭。
-    反过来在「Scripting 自身」模式下，这里显示着别家的名字就说明名额被占了，
-    openRSDTunnel 起不来——iOS 同时只允许一条 VPN 生效。
+    注意它**只能看到自己**——dts 原文：「App-only global control of Scripting's
+    VPN」。iOS 不让应用读别家的 VPN 配置，所以看不出当前是 Loon 还是 Surge 在跑，
+    这一项也无从判断代理工具有没有起来。
+    判定按模式反过来：自身模式要它连着，代理模式要它**断开**（名额得让出去）。
   */
   try {
     const vpn = await VPN.getState();
-    debugLog("vpn", "系统 VPN 状态", JSON.stringify(vpn));
-    const who = vpn.selectedConfigurationName ?? vpn.providerBundleId ?? "（未知）";
+    debugLog("vpn", "Scripting 自身 VPN", JSON.stringify(vpn));
+    const profile = vpn.selectedConfigurationName ?? vpn.providerBundleId ?? "（未选择）";
+    const connected = vpn.status === "connected";
     items.push({
-      label: "当前 VPN",
-      value: vpn.status === "connected" ? `${who} · 已连接` : `${who} · ${vpn.status}`,
-      // 代理模式要它连着；自身模式下它连着反而说明名额被别人占了。
-      ok:
-        endpoint.source === "proxyApp"
-          ? vpn.status === "connected"
-          : null,
+      label: "Scripting 的 VPN",
+      value:
+        endpoint.source === "proxyApp" && !connected
+          ? `${profile} · ${vpn.status}（已让出名额，正常）`
+          : `${profile} · ${vpn.status}`,
+      ok: endpoint.source === "proxyApp" ? !connected : connected,
     });
     if (vpn.problem) items.push({ label: "VPN 报错", value: vpn.problem, ok: false });
   } catch (error) {
-    items.push({ label: "当前 VPN", value: describeError(error), ok: null });
+    items.push({ label: "Scripting 的 VPN", value: describeError(error), ok: null });
   }
 
   log("探测配对端口…");
