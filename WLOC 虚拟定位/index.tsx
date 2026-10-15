@@ -19,6 +19,8 @@ import {
   Spacer,
   Image,
   Button,
+  AppEvents,
+  type ScenePhase,
   type VirtualNode,
   type Color,
   type KeywordPoint,
@@ -409,6 +411,49 @@ function App() {
   }
 
   /**
+   * 申请后台保活。
+   *
+   * `keepAlive()` 返回的是 **boolean**：系统拒绝时 resolve(false) 而不是 reject。
+   * 之前只接了 reject 分支，被拒也当成成功，于是锁屏掉线时界面上毫无线索。
+   * 文档：Scripting Documentation / background_keeper。
+   */
+  async function acquireKeepAlive(): Promise<void> {
+    try {
+      const started = await BackgroundKeeper.keepAlive();
+      debugLog("keepalive", `keepAlive() 返回 ${started}`);
+      if (!started) {
+        fireToast("系统拒绝了后台保活，锁屏后会掉线");
+        return;
+      }
+      // 以应用自己报的状态为准，不是以我们调过为准。
+      const active = await BackgroundKeeper.isActive;
+      debugLog("keepalive", `isActive=${active}`);
+      if (!active) fireToast("后台保活未生效，锁屏后可能掉线");
+    } catch (error) {
+      debugLog("keepalive", "申请后台保活出错", describeError(error));
+      fireToast("后台保活未生效，锁屏后可能掉线");
+    }
+  }
+
+  /**
+   * 会话期间跟着前后台切换维持保活。
+   *
+   * 文档建议的用法就是进后台时 keepAlive、回前台时 stopKeepAlive——
+   * 保活队列是引用计数的，重复调用安全。只在会话进行中才续，
+   * 空闲时让它停掉，免得白耗电。
+   */
+  useEffect(() => {
+    const listener = (phase: ScenePhase) => {
+      debugLog("keepalive", `scenePhase=${phase}`);
+      if (session.value === null) return;
+      if (phase === "background") void acquireKeepAlive();
+      else if (phase === "active") void BackgroundKeeper.stopKeepAlive().catch(() => undefined);
+    };
+    AppEvents.scenePhase.addListener(listener);
+    return () => AppEvents.scenePhase.removeListener(listener);
+  }, []);
+
+  /**
    * 会话异常中断的统一收尾。
    *
    * 锁屏、切后台、系统回收隧道都会打断 RSD 连接（典型是
@@ -643,16 +688,7 @@ function App() {
         startedAt: now,
         updatedAt: now,
       });
-      // 切到别的 App 时脚本要继续跑，否则连接一断模拟就停了。
-      // 保活失败过去是静默吞掉的，结果锁屏断连时完全看不出原因——它需要 PRO 权益，
-      // 拿不到就一定会在锁屏后掉线，这种事必须让用户知道。
-      void BackgroundKeeper.keepAlive().then(
-        () => debugLog("keepalive", "后台保活已获取"),
-        (error) => {
-          debugLog("keepalive", "后台保活失败", describeError(error));
-          fireToast("后台保活未生效，锁屏后可能掉线");
-        },
-      );
+      void acquireKeepAlive();
       void startLiveActivity(start);
       return handle;
     } catch (e) {
@@ -1178,6 +1214,7 @@ function App() {
         jitterRadius={settings.jitterRadius}
         drawnPath={drawnPath}
         onCoordChange={handleCoordChange}
+        onPickUnavailable={() => fireToast("3D 或旋转视角下点选不准，请先点右上角的 2D/3D 按钮回正")}
       />
 
       <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} alignment="leading">

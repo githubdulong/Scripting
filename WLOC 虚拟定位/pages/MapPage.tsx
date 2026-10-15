@@ -49,6 +49,8 @@ interface MapPageProps {
   drawnPath: Coordinate[];
   layer: Observable<MapLayerId>;
   onCoordChange: (lat: number, lng: number, name?: string) => void;
+  /** 当前相机姿态下点选不可用（3D / 旋转），由调用方提示用户。 */
+  onPickUnavailable: () => void;
 }
 
 export function MapPage({
@@ -62,6 +64,7 @@ export function MapPage({
   jitterRadius,
   drawnPath,
   onCoordChange,
+  onPickUnavailable,
 }: MapPageProps) {
   const initialActive = loadActiveCache();
 
@@ -148,25 +151,58 @@ export function MapPage({
   const mapStyle = layerToStyle(layer.value);
 
   /**
+   * 相机当前框住的经纬范围。
+   *
+   * 双向绑定在手势结束后回写的不一定还是 region 形式——也可能是 rect（米制尺寸）
+   * 或 camera（视点式）。只认 region 的话，用户一拖动地图就再也换算不出坐标了。
+   */
+  function visibleSpan(): { center: Coordinate; latitudeDelta: number; longitudeDelta: number } | null {
+    const position = cameraPosition.value;
+
+    const region = position.region;
+    if (region) {
+      return {
+        center: region.center,
+        latitudeDelta: region.span.latitudeDelta,
+        longitudeDelta: region.span.longitudeDelta,
+      };
+    }
+
+    const rect = position.rect;
+    if (rect) {
+      // size 是米，换成度。经度那一轴随纬度收缩，要乘 cos。
+      const cos = Math.max(0.01, Math.cos((rect.center.latitude * Math.PI) / 180));
+      return {
+        center: rect.center,
+        latitudeDelta: rect.size.height / 111_320,
+        longitudeDelta: rect.size.width / (111_320 * cos),
+      };
+    }
+
+    return null;
+  }
+
+  /**
    * 把点击位置换算成坐标——这就是「点哪选哪」。
    *
    * Scripting 没有 MapKit 的 MapReader/proxy.convert，但该有的料都在：
-   * 相机的 region 给出中心与经纬跨度，GeometryReader 给出视图尺寸，
-   * 线性插值即可。地图是墨卡托投影、纬度并非严格线性，不过在城市级跨度下
-   * 误差只有米级，对定位模拟没有影响。
+   * 相机给出中心与跨度，GeometryReader 给出视图尺寸，线性插值即可。
+   * 地图是墨卡托投影、纬度并非严格线性，不过在城市级跨度下误差只有米级。
    *
-   * 相机被旋转或倾斜（3D）后这套换算会偏——那时 region 通常也取不到，
-   * 取不到就按地图中心处理，不会给出错误的坐标。
+   * 相机被倾斜（3D）或旋转之后这套线性换算就不成立了——那是透视投影，
+   * 平面插值会把点算到别的地方去。这种情况返回 null、让调用方提示用户，
+   * 比默默给一个错坐标强（之前是退回地图中心，表现就是「点哪都选中间」）。
    */
   function coordinateAtPoint(point: Point, size: { width: number; height: number }): Coordinate | null {
-    const region = cameraPosition.value.region;
-    if (!region || size.width <= 0 || size.height <= 0) {
-      return getCoordFromPosition(cameraPosition.value);
-    }
+    const camera = cameraPosition.value.camera;
+    if (camera && (camera.pitch !== 0 || camera.heading !== 0)) return null;
+
+    const span = visibleSpan();
+    if (!span || size.width <= 0 || size.height <= 0) return null;
 
     return {
-      latitude: region.center.latitude + (0.5 - point.y / size.height) * region.span.latitudeDelta,
-      longitude: region.center.longitude + (point.x / size.width - 0.5) * region.span.longitudeDelta,
+      latitude: span.center.latitude + (0.5 - point.y / size.height) * span.latitudeDelta,
+      longitude: span.center.longitude + (point.x / size.width - 0.5) * span.longitudeDelta,
     };
   }
 
@@ -185,6 +221,7 @@ export function MapPage({
               perform: (location: Point) => {
                 const picked = coordinateAtPoint(location, proxy.size);
                 if (picked) onCoordChange(picked.latitude, picked.longitude);
+                else onPickUnavailable();
               },
             }}
             controls={
