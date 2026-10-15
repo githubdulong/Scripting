@@ -48,5 +48,8 @@
   "iconImage": "https://raw.githubusercontent.com/ios151/-/main/wloc.png",
   "icon": "location.fill.viewfinder",
   "runInApp": true,
-  "remoteResource": null
+  "remoteResource": {
+    "url": "https://github.com/ios151/Scripting",
+    "autoUpdateInterval": 86400
+  }
 }

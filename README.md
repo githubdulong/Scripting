@@ -1,8 +1,9 @@
-# Scripting
+# WLOC 虚拟定位
 
-[Scripting](https://apps.apple.com/app/id6479691128) 应用上的脚本。
+[Scripting](https://apps.apple.com/app/id6479691128) 应用上的定位模拟脚本。
 
-## WLOC 虚拟定位 2.0.0
+仓库根目录就是脚本目录本身（`index.tsx` + `script.json` 在顶层），
+这样 `script.json` 的 `remoteResource` 才能把本仓库直接当成更新源拉取。
 
 用苹果官方的开发者接口模拟本机定位，与 Xcode 的 Simulate Location 走同一套机制，不涉及证书、代理改写或系统文件。
 
@@ -26,6 +27,19 @@
 | `core/movement.ts` `core/geo.ts` `core/gpx.ts` | 移动模拟：球面几何、路径推进、GPX |
 
 界面：Apple MapKit 原生地图（标准 / 卫星 / 混合、3D 地形、路况）、全球搜索、收藏与历史、四种移动方式各三档速度加自定义、多方案路线、手绘路径、摇杆、锁屏与灵动岛实时活动、连接诊断。
+
+### 远程更新
+
+`script.json` 里配了：
+
+```json
+"remoteResource": {
+  "url": "https://github.com/ios151/Scripting",
+  "autoUpdateInterval": 86400
+}
+```
+
+应用会按这个间隔（秒）自己来拉，脚本代码不参与。注意更新会覆盖设备上的本地改动。
 
 ### 类型检查
 
