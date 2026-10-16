@@ -1007,7 +1007,7 @@ export function App({ shared }: AppProps = {}) {
       if (phase !== "inactive") debugLog("keepalive", `scenePhase=${phase}`);
       if (session.value === null) return;
       if (phase === "background") void acquireKeepAlive();
-      else if (phase === "active") void BackgroundKeeper.stopKeepAlive().catch(() => undefined);
+      // else if (phase === "active") void BackgroundKeeper.stopKeepAlive().catch(() => undefined);
     };
     AppEvents.scenePhase.addListener(listener);
     return () => AppEvents.scenePhase.removeListener(listener);
