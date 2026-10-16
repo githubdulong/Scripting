@@ -55,6 +55,10 @@ import {
   loadRecovery,
   saveRecovery,
   clearRecovery,
+  markSessionBeat,
+  clearSessionBeat,
+  takeRestoreRequest,
+  ackRestore,
 } from "./utils/storage";
 import { MapPage } from "./pages/MapPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -87,6 +91,16 @@ interface MenuEntry {
 
 /** 移动模拟的推进间隔。与 wloc（iOS）一致，太密会让 DTX 队列排不过来。 */
 const MOVEMENT_TICK_MS = 500;
+/*
+  断线重连的节奏。
+  关掉飞行模式后网络要几秒才稳，2 秒一次、试 5 次≈10 秒，足够跨过切换期；
+  再连不上就如实报错，别无限转圈。
+*/
+const RECONNECT_DELAY_MS = 2000;
+const RECONNECT_TRIES = 5;
+
+/** 会话中报平安、查卡片恢复请求的节拍。app_intents.tsx 按它定「主脚本还在」的判据。 */
+const RESTORE_POLL_MS = 1000;
 
 interface PlannedRoute {
   name?: string;
@@ -154,7 +168,13 @@ function App() {
   const guideAttempts = useObservable(0);
   const guideStart = useRef<Coordinate | null>(null);
   const guideError = useRef<unknown>(null);
-  const guideTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** 引导连上之后，这条会话掉线该怎么办。和直连那条路保持一致。 */
+  const guideDropRetry = useRef<Coordinate | null>(null);
+  const guideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 正在跑一次建会话。轮询和「继续」可能撞上，用它互斥。 */
+  const guideBusy = useRef(false);
+  /** 轮次号。过期那一轮迟到的结果一律丢弃，不许它改状态。 */
+  const guideRun = useRef(0);
 
   /** 把镜头移到这个点（摇杆卡片上的准星）。保留当前缩放，不动选中点。 */
   const recenterCoord = useObservable<Coordinate | null>(null);
@@ -399,10 +419,18 @@ function App() {
   }
 
   async function handleAddFavorite(coord: Coordinate) {
+    /*
+      默认名直接用当前地名。
+
+      搜到「杭州大剧院」再点收藏，默认却填着「我的收藏」，等于每次都要手动改一遍。
+      地名已经在卡片上显示着了，拿来当默认值才是顺手的那个选择；
+      反查不出地名时（空地、隧道开着）再退回通用名。
+    */
+    const suggested = placeName.trim() || "我的收藏";
     const name = await Dialog.prompt({
       title: "收藏此位置",
       message: `经度 ${coord.longitude.toFixed(6)}  纬度 ${coord.latitude.toFixed(6)}`,
-      defaultValue: "我的收藏",
+      defaultValue: suggested,
       placeholder: "备注名称（如：公司、家）",
       selectAll: true,
       confirmLabel: "保存",
@@ -572,6 +600,46 @@ function App() {
     return () => AppEvents.scenePhase.removeListener(listener);
   }, []);
 
+  /*
+    接住锁屏 / 灵动岛上「恢复真实位置」的请求。
+
+    那个按钮的 intent 跑在单独的环境里，拿不到这里的会话；会话心跳又每 4 秒
+    重发一次假坐标，intent 自己连上去发停止，几秒后就被盖回去——真机上表现为
+    「卡片没了，定位还在」。所以会话进行中这里每秒报一次平安、看一眼有没有请求，
+    有就走和「停止」按钮同一条路收尾，再把结果回执给 intent（见 app_intents.tsx）。
+
+    经 ref 调用 handleStopSession：这个定时器只在挂载时建一次，直接引用会一直
+    拿着第一次渲染时的那份函数。
+  */
+  const stopSessionRef = useRef(handleStopSession);
+  stopSessionRef.current = handleStopSession;
+  useEffect(() => {
+    let busy = false;
+    let beating = false;
+    const timer = setInterval(() => {
+      if (busy) return;
+      if (session.value === null) {
+        if (beating) {
+          clearSessionBeat();
+          beating = false;
+        }
+        return;
+      }
+      markSessionBeat();
+      beating = true;
+      const id = takeRestoreRequest();
+      if (!id) return;
+      busy = true;
+      debugLog("liveactivity", "收到卡片上的恢复请求");
+      void stopSessionRef.current(true)
+        .then((failure) => ackRestore({ id, ok: failure === null, message: failure ?? undefined }))
+        .finally(() => {
+          busy = false;
+        });
+    }, RESTORE_POLL_MS);
+    return () => clearInterval(timer);
+  }, []);
+
   /**
    * 会话异常中断的统一收尾。
    *
@@ -581,21 +649,37 @@ function App() {
    *
    * @param retry 能重连就传重连动作；不能（比如移动中）传 null
    */
-  async function handleSessionDropped(message: string, retry: (() => void) | null) {
+  async function handleSessionDropped(message: string, retryPoint: Coordinate | null) {
     debugLog("ui", "会话中断", message);
     session.setValue(null);
     // 恢复记录故意不删：连接是异常断的，停止指令未必送达，
     // 下次启动仍要提示用户恢复。
     void BackgroundKeeper.stopKeepAlive().catch(() => undefined);
 
-    if (retry && !reconnecting.current) {
+    if (retryPoint && !reconnecting.current) {
       reconnecting.current = true;
       setSessionState("connecting");
       setStatusMsg("连接中断，正在重连…");
       fireToast("连接中断，正在重连…");
       try {
-        retry();
-        return;
+        /*
+          等一会儿再试，而且多试几次。
+
+          掉线最常见的起因是网络刚切换——关掉飞行模式、WiFi 转蜂窝——这时候
+          代理工具的 TUN 正在重建，立刻重连必然失败。上一版就是立即重连一次，
+          失败后又把用户甩回蜂窝引导，连上再断、断了再弹，绕不出去。
+        */
+        for (let attempt = 1; attempt <= RECONNECT_TRIES; attempt++) {
+          await delay(RECONNECT_DELAY_MS);
+          try {
+            await connectSession(retryPoint, retryPoint);
+            debugLog("ui", `断线重连成功（第 ${attempt} 次）`);
+            fireToast("已重新连上");
+            return;
+          } catch (error) {
+            debugLog("ui", `断线重连第 ${attempt} 次失败`, describeError(error));
+          }
+        }
       } finally {
         reconnecting.current = false;
       }
@@ -629,34 +713,28 @@ function App() {
       "ui",
       `开始模拟：地图系 ${lat.toFixed(6)}, ${lng.toFixed(6)} → 设备 ${target.latitude.toFixed(6)}, ${target.longitude.toFixed(6)}（扰动 ${settings.jitterRadius}m）`,
     );
+
+    /*
+      走和「移动」面板同一条路。
+
+      这里原先自己抄了一遍 startLocationSession 的调用和善后，于是后来给
+      ensureSession 加的蜂窝引导、失败分诊这些，主按钮一概享受不到——用户点
+      「开始位置模拟」连不上，弹的还是那段生硬的错误文字。两处行为必须一致，
+      就只能有一份实现。
+    */
     try {
-      const handle = await startLocationSession({
-        record: pairing,
-        endpoint: { host: settings.deviceHost, source: settings.tunnelSource },
-        latitude: target.latitude,
-        longitude: target.longitude,
-        keepAlive: settings.keepAlive,
-        onStatus: (message) => {
-          debugLog("status", message);
-          setStatusMsg(message);
-        },
-        onFailure: (message) => {
-          void handleSessionDropped(message, () => void handleStartSession());
-        },
-      });
-      session.setValue(handle);
-      setSessionState("active");
-      setStatusMsg(`模拟中 · ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
-      markActive(lat, lng);
+      await connectSession({ latitude: lat, longitude: lng }, { latitude: lat, longitude: lng });
       fireToast("位置模拟已启动");
-      sessionStartedAt.current = Date.now();
-      void startLiveActivity({ latitude: lat, longitude: lng });
-      debugLog("ui", "会话已就绪", JSON.stringify(handle.peer));
     } catch (e) {
       setSessionState("idle");
       setStatusMsg("");
       debugLog("ui", "启动失败", describeError(e));
-      showErrorAlert(e instanceof Error ? e.message : String(e));
+      // 连不上先问一句，别直接甩错误——详见 ensureSession 里同样这段
+      guideStart.current = { latitude: lat, longitude: lng };
+      guideDropRetry.current = { latitude: lat, longitude: lng };
+      guideError.current = e;
+      guideAttempts.setValue(0);
+      guideStage.setValue("help");
     }
   }
 
@@ -686,6 +764,7 @@ function App() {
     // 摇杆是手推的，没有「总长」可言；沿路线/手绘才有进度。
     const walk = movementKind === "route" ? walker.value?.state : undefined;
     return {
+      title: cardStatus(conf),
       place: cardTitle(conf),
       latitude: point.latitude,
       longitude: point.longitude,
@@ -701,6 +780,7 @@ function App() {
       compactIcon: islandIcon(moving ? info.systemImage : "", conf),
       compactIconIsEmoji: conf.islandIcon === "emoji",
       compactText: islandText(point, walk, conf),
+      compactTimer: conf.islandText === "elapsed",
       restoreTint: conf.restoreTint,
     };
   }
@@ -712,6 +792,16 @@ function App() {
    * 地名要反向地理编码，开着本机隧道时经常查不到（见 resolvePlaceName），
    * 所以「地点名」实际上常常退回坐标——想固定显示别的就选自定义。
    */
+  /**
+   * 卡片与灵动岛的大标题。
+   *
+   * 返回空串表示「交给卡片自己按状态生成」——自定义模式下用户没填内容时
+   * 也走这条，总比顶着一行空白强。
+   */
+  function cardStatus(conf: AppSettings): string {
+    return conf.cardStatus === "custom" ? conf.cardCustomStatus.trim() : "";
+  }
+
   function cardTitle(conf: AppSettings): string {
     switch (conf.cardTitle) {
       case "place":
@@ -746,13 +836,24 @@ function App() {
    */
   function islandText(point: Coordinate, walk: WalkState | undefined, conf: AppSettings): string {
     const ratio = walk && walk.total > 0 ? walk.travelled / walk.total : null;
+    /*
+      收起态右侧只有六十来点宽，「39.918, 116.437」这种长度必然被砍成
+      「39.918,…」——省略号顶着电池图标，什么也没说明。所以这里就按那个宽度
+      来配：两位小数（约 1 km 精度，收起态本来也只是瞥一眼）、去掉空格。
+      要精确坐标的话，卡片展开态和地图上都有完整的。
+    */
+    const shortCoord = `${point.latitude.toFixed(2)},${point.longitude.toFixed(2)}`;
     switch (conf.islandText) {
+      case "elapsed":
+        // 计时由卡片那边用系统计时器画（compactTimer），这里不出文字
+        return "";
       case "status":
         return movementKind === "none" ? "模拟中" : walk?.paused ? "已暂停" : "移动中";
       case "place":
-        return placeName || `${point.latitude.toFixed(3)}, ${point.longitude.toFixed(3)}`;
+        // 地名放得下就用地名，放不下系统会按 minScaleFactor 缩，仍比坐标好认
+        return placeName || shortCoord;
       case "coordinate":
-        return `${point.latitude.toFixed(3)}, ${point.longitude.toFixed(3)}`;
+        return shortCoord;
       case "speed":
         return movementKind === "none"
           ? ""
@@ -884,7 +985,21 @@ function App() {
    *
    * 成功返回句柄，失败把错误原样抛出去——是报错还是转交引导，由调用方决定。
    */
-  async function connectSession(start: Coordinate): Promise<LocationSessionHandle> {
+  async function connectSession(
+    start: Coordinate,
+    /**
+     * 掉线后要重连到哪个点；null 表示不重连。
+     *
+     * 定点模拟传自己的坐标——位置是个固定值，重连一次就回来了。
+     * 沿路线/摇杆移动传 null：重连要从头建会话，而路径进度、往返计数都在
+     * PathWalker 里，续不上，只能停掉如实报错，让用户自己决定重来。
+     *
+     * 这里收坐标而不是回调，是因为上一版传的回调正是 handleStartSession，
+     * 而它失败会弹蜂窝引导——于是「断线→重连→失败→弹引导→连上→再断线」
+     * 转成了死循环。重连该自己闷头试，不该把用户拽回引导。
+     */
+    reconnectTo: Coordinate | null = null,
+  ): Promise<LocationSessionHandle> {
     const target = deviceCoordinate(start.latitude, start.longitude);
     const handle = await startLocationSession({
       record: pairing!,
@@ -897,10 +1012,8 @@ function App() {
         setStatusMsg(message);
       },
       onFailure: (message) => {
-        // 移动中掉线不自动重连：重连要从头建会话，而路径进度、往返计数都在
-        // PathWalker 里，续不上。停掉移动、如实报错，让用户自己决定重来。
-        stopMovement();
-        void handleSessionDropped(message, null);
+        if (!reconnectTo) stopMovement();
+        void handleSessionDropped(message, reconnectTo);
       },
     });
 
@@ -917,6 +1030,14 @@ function App() {
     void acquireKeepAlive();
     sessionStartedAt.current = Date.now();
     void startLiveActivity(start);
+    /*
+      收尾状态在这里设，不交给调用方。
+
+      之前只有「开始位置模拟」那条路自己设了，引导重试成功的那条没设——
+      于是界面一直停在 startLocationSession 报的最后一句「下发坐标…」上，
+      底下却已经显示「模拟中」了，自相矛盾。
+    */
+    setStatusMsg(`模拟中 · ${start.latitude.toFixed(5)}, ${start.longitude.toFixed(5)}`);
     return handle;
   }
 
@@ -948,6 +1069,8 @@ function App() {
         该干什么。读不到网络类型（Scripting 没有这个 API），所以让用户自己说。
       */
       guideStart.current = start;
+      // 移动场景不自动重连，理由见 connectSession 的 onDropRetry
+      guideDropRetry.current = null;
       guideError.current = e;
       guideAttempts.setValue(0);
       guideStage.setValue("help");
@@ -962,60 +1085,125 @@ function App() {
     模式、再切回应用的这段时间里，脚本自己在试，连上就自动进入「可以关掉了」。
     不这么做的话，用户每切一次都得回来手动点一次重试。
   */
-  const GUIDE_RETRY_MS = 4000;
+  /*
+    轮询间隔。
+
+    这个流程对时机敏感——隧道重连上的那个窗口不长，错过就得等下一轮。
+    每轮自带 10 秒超时、又有 busy 闸挡着重入，所以间隔可以压短，
+    真正的节流是「上一轮没结束就不开新的」而不是这个数字。
+  */
+  /*
+    两轮之间的喘息。
+
+    不是「每隔这么久试一次」——真正决定节奏的是上一轮多快结束：失败立刻接下一轮，
+    这个值只用来避免失败得太快时把 CPU 打满。隧道重连上的窗口很短，
+    固定节拍很容易整个错过。
+  */
+  const GUIDE_RETRY_MS = 500;
 
   function stopGuideLoop() {
+    // 轮次号往前推一格：已经发出去的那一轮即便迟到成功，也不会再改状态
+    guideRun.current += 1;
+    guideBusy.current = false;
     const timer = guideTimer.current;
     if (timer !== null) {
-      clearInterval(timer);
+      clearTimeout(timer);
       guideTimer.current = null;
     }
   }
 
-  function beginGuideLoop() {
+  /**
+   * 在引导里跑一次建会话。轮询和「立刻重试」共用这一个。
+   *
+   * 成功就进第三阶段；失败什么都不做——用户还在切飞行模式，失败本来就是
+   * 流程的一部分，弹个错只会打断他。
+   */
+  const GUIDE_ATTEMPT_TIMEOUT_MS = 10000;
+
+  function attemptInGuide() {
     const start = guideStart.current;
-    if (!start) return;
+    // 上一次还没跑完就跳过，免得几条建会话的流程叠在一起
+    if (!start || guideBusy.current) return;
+    guideBusy.current = true;
+    const run = ++guideRun.current;
+    guideAttempts.setValue(guideAttempts.value + 1);
+    /*
+      每一轮都要能自己结束。
+
+      JS 没法取消已经发出的 Promise，而底下任何一步挂死都会让这一轮永远不落地，
+      `guideBusy` 跟着一直为真——后面每次重试都被静默跳过，用户看到的就是
+      「已试 2 次」之后再无动静。包一层超时，到点就放弃这一轮、放开闸门，
+      让下一轮能重新发起。原生那版靠 Task.cancel 做同样的事。
+    */
+    void withTimeout(connectSession(start, guideDropRetry.current), GUIDE_ATTEMPT_TIMEOUT_MS, "本轮超时")
+      .then(() => {
+        // 过期那一轮迟到的成功不算数，否则会把已经收起的引导又翻出来
+        if (run !== guideRun.current) return;
+        stopGuideLoop();
+        guideStage.setValue("airplaneOff");
+      })
+      .catch((error) => {
+        /*
+          飞行模式开着的那几秒必然是 ENETUNREACH——隧道跟着断了。
+          这是流程的一部分，不是故障，记一行短的就够；其他错误才值得记全。
+        */
+        const code = (error as { code?: string } | null)?.code ?? "";
+        if (code === "ENETUNREACH") {
+          debugLog("guide", `第 ${guideAttempts.value} 次：网络不可达（飞行模式开着时正常）`);
+        } else {
+          debugLog("guide", `第 ${guideAttempts.value} 次重试仍失败`, describeError(error));
+        }
+      })
+      .finally(() => {
+        if (run !== guideRun.current) return;
+        guideBusy.current = false;
+        /*
+          这一轮刚落地就排下一轮。
+
+          原先用 setInterval 按固定节拍打，一轮要是只花 200 ms 失败，也得干等到
+          下一个节拍；而隧道重连上的窗口很短，很容易整段错过。现在是「结束即续」，
+          快慢完全跟着上一轮走。
+        */
+        if (guideStage.value === "airplaneOn") {
+          guideTimer.current = setTimeout(attemptInGuide, GUIDE_RETRY_MS);
+        }
+      });
+  }
+
+  function beginGuideLoop() {
+    if (!guideStart.current) return;
     stopGuideLoop();
     guideAttempts.setValue(0);
     guideStage.setValue("airplaneOn");
+    /*
+      先立刻试一次，再开始轮询。
 
-    let running = false;
-    guideTimer.current = setInterval(() => {
-      // 上一轮还没跑完就跳过，免得几条建会话的流程叠在一起。
-      if (running) return;
-      running = true;
-      guideAttempts.setValue(guideAttempts.value + 1);
-      void connectSession(start)
-        .then(() => {
-          stopGuideLoop();
-          guideStage.setValue("airplaneOff");
-        })
-        .catch((error) => {
-          /*
-            飞行模式开着的那几秒必然是 ENETUNREACH——隧道跟着断了。
-            这是流程的一部分，不是故障，记一行短的就够；其他错误才值得记全。
-          */
-          const code = (error as { code?: string } | null)?.code ?? "";
-          if (code === "ENETUNREACH") {
-            debugLog("guide", `第 ${guideAttempts.value} 次：网络不可达（飞行模式开着时正常）`);
-          } else {
-            debugLog("guide", `第 ${guideAttempts.value} 次重试仍失败`, describeError(error));
-          }
-        })
-        .finally(() => {
-          running = false;
-        });
-    }, GUIDE_RETRY_MS);
+      setInterval 的第一次触发要等满一个间隔——用户点完「我正在使用移动数据」
+      得先干等几秒才看到次数动，期间完全不知道它有没有在工作。
+    */
+    // 立刻开跑；后面每一轮由 attemptInGuide 自己接上
+    attemptInGuide();
   }
 
   function dismissGuide(showError: boolean) {
     stopGuideLoop();
     guideStage.setValue(null);
-    setSessionState("idle");
-    setStatusMsg("");
     const error = guideError.current;
     guideStart.current = null;
     guideError.current = null;
+
+    /*
+      会话已经连上时，收起引导不能动状态。
+
+      第三阶段的「完成」走的也是这里，而它原先无条件把 sessionState 打回 idle、
+      清掉状态文案——界面于是从「更新坐标 / 恢复真实位置」变回「开始位置模拟」，
+      看着像根本没连上，用户只好再开关一轮飞行模式，怎么都走不出去。
+      连上了就只收起引导，其余一概不碰。
+    */
+    if (session.value) return;
+
+    setSessionState("idle");
+    setStatusMsg("");
     if (showError && error) {
       showErrorAlert(error instanceof Error ? error.message : String(error));
     }
@@ -1029,7 +1217,7 @@ function App() {
     setSessionState("connecting");
     setStatusMsg("准备中…");
     try {
-      await connectSession(start);
+      await connectSession(start, guideDropRetry.current);
       guideStart.current = null;
       guideError.current = null;
     } catch (e) {
@@ -1321,7 +1509,15 @@ function App() {
     movementTimer.setValue(timer);
   }
 
-  async function handleStopSession() {
+  /** @returns 失败原因；成功为 null */
+  /**
+   * 停止模拟。
+   *
+   * @param silent 由锁屏卡片的 intent 触发时传 true——那会儿用户在锁屏上，
+   *               App 内的弹窗他看不见，失败原因由 intent 发通知告诉他。
+   * @returns 失败原因；成功为 null
+   */
+  async function handleStopSession(silent = false): Promise<string | null> {
     stopMovement();
     const handle = session.value;
     session.setValue(null);
@@ -1329,18 +1525,25 @@ function App() {
     setStatusMsg("");
     activeLoc.setValue(null);
     saveActiveCache(null);
-    clearRecovery();
     void BackgroundKeeper.stopKeepAlive().catch(() => undefined);
-    void endLiveActivity();
     if (handle) {
       try {
         await handle.stop();
       } catch (e) {
-        showErrorAlert(`停止时出错：${e instanceof Error ? e.message : String(e)}`);
-        return;
+        // 卡片和恢复记录都留着：停止指令没送到，设备可能还在模拟，
+        // 卡片得继续提醒，下次启动也要接着提示恢复。
+        // 说清后果：会话这边已经作废，但停止指令没送到，设备很可能还在模拟
+        const message =
+          `停止时出错：${e instanceof Error ? e.message : String(e)}。` +
+          "设备可能仍在模拟位置，重新连接后再停一次。";
+        if (!silent) showErrorAlert(message);
+        return message;
       }
     }
+    clearRecovery();
+    void endLiveActivity();
     fireToast("已恢复真实位置");
+    return null;
   }
 
   async function handleUpdateCoord() {
@@ -1754,6 +1957,50 @@ function App() {
           <HStack spacing={8} frame={{ maxWidth: "infinity" }}>
             <Image systemName="mappin.and.ellipse" foregroundStyle="systemRed" font="subheadline" />
             <Text font="headline" foregroundStyle="label">当前坐标</Text>
+            <Spacer />
+            {/*
+              收藏相关的两个入口并排放在标题行。
+
+              收藏放这儿，是因为它原先和「开始位置模拟」并排在底部，而那一排在模拟
+              进行中会整个换成「更新坐标 / 恢复真实位置」——走到一个想记下来的地方
+              时，收藏入口恰好不见了。它针对的本来就是上面这个坐标，挂在标题行才对。
+
+              旁边补一个「收藏夹」：翻已存的地点比新增更常用，而它原先只在顶部菜单
+              里，得先把菜单展开才看得到，比「收藏」这个低频动作还深一层。
+              两个都用图标按钮，不带文字，省地方也不至于把标题挤掉。
+            */}
+            <Button
+              buttonStyle="borderless"
+              action={() => openSheet("favorites")}
+            >
+              <HStack spacing={4}>
+                <Image systemName="list.star" foregroundStyle="systemBlue" font="caption" />
+                <Text font="caption2" foregroundStyle="systemBlue">收藏夹</Text>
+              </HStack>
+            </Button>
+            <Button
+              buttonStyle="borderless"
+              action={
+                isCurrentCoordFavorited()
+                  ? handleRemoveCurrentFavorite
+                  : () => handleAddFavorite({ latitude: coordLat.value, longitude: coordLng.value })
+              }
+              disabled={!coordReady.value}
+            >
+              <HStack spacing={4}>
+                <Image
+                  systemName={isCurrentCoordFavorited() ? "star.fill" : "star"}
+                  foregroundStyle={isCurrentCoordFavorited() ? "systemOrange" : "systemBlue"}
+                  font="caption"
+                />
+                <Text
+                  font="caption2"
+                  foregroundStyle={isCurrentCoordFavorited() ? "systemOrange" : "systemBlue"}
+                >
+                  {isCurrentCoordFavorited() ? "已收藏" : "收藏"}
+                </Text>
+              </HStack>
+            </Button>
           </HStack>
 
           {/*
@@ -1888,26 +2135,6 @@ function App() {
                     </Text>
                   </HStack>
                 </Button>
-                <Button
-                  action={
-                    isCurrentCoordFavorited()
-                      ? handleRemoveCurrentFavorite
-                      : () => handleAddFavorite({ latitude: coordLat.value, longitude: coordLng.value })
-                  }
-                  frame={{ maxWidth: "infinity" }}
-                  background={{
-                    style: isCurrentCoordFavorited() ? "systemGray" : "systemOrange",
-                    shape: "capsule",
-                  }}
-                  tint="white"
-                >
-                  <HStack spacing={6} padding={{ vertical: 10, leading: 16, trailing: 20 }}>
-                    <Image systemName={isCurrentCoordFavorited() ? "star.slash" : "star"} font="subheadline" />
-                    <Text font="subheadline" fontWeight="medium">
-                      {isCurrentCoordFavorited() ? "取消收藏" : "收藏"}
-                    </Text>
-                  </HStack>
-                </Button>
               </>
             )}
           </HStack>
@@ -1941,6 +2168,7 @@ function App() {
             stage={guideStage.value}
             attempts={guideAttempts.value}
             onRetry={() => void retryFromGuide()}
+            onRetryNow={attemptInGuide}
             onUseCellular={beginGuideLoop}
             onCancel={() => dismissGuide(true)}
             onDone={() => dismissGuide(false)}

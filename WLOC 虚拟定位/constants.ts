@@ -2,6 +2,7 @@
 import type { Color } from "scripting";
 import type {
   AppSettings,
+  CardStatusMode,
   CardTitleMode,
   IslandIconMode,
   IslandTextMode,
@@ -38,7 +39,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   islandTint: "systemGreen",
   islandIcon: "mode",
   islandEmoji: "📍",
-  islandText: "status",
+  // 计时宽度固定、收起态那六十来点永远排得下；其余文字都可能被截断。
+  // 只影响新装——已保存的设置按 storage 里的合并规则保留原值。
+  islandText: "elapsed",
+  cardStatus: "auto",
+  cardCustomStatus: "",
   islandCustomText: "",
   menuCorner: "topLeft",
   // 标准图层有地名和路名。卫星图好看但没字，第一眼认不出自己在哪——
@@ -66,6 +71,11 @@ export const LOOPBACK_MODULE_SURGE =
 export const WORKER_SOURCE_URL = "https://github.com/ios151/wloc";
 
 /** 锁屏卡片大标题可选项。 */
+export const CARD_STATUS_OPTIONS: { id: CardStatusMode; label: string; detail: string }[] = [
+  { id: "auto", label: "跟着状态", detail: "位置模拟中 / 步行中 / 已暂停" },
+  { id: "custom", label: "自定义文本", detail: "固定显示一句话，可以放 Emoji" },
+];
+
 export const CARD_TITLE_OPTIONS: { id: CardTitleMode; label: string; detail: string }[] = [
   { id: "place", label: "地点名", detail: "查不到地名时退回坐标" },
   { id: "coord", label: "坐标", detail: "始终显示经纬度" },
@@ -96,6 +106,7 @@ export const ISLAND_ICON_OPTIONS: { id: IslandIconMode; label: string; detail: s
 
 /** 灵动岛文字可选项。 */
 export const ISLAND_TEXT_OPTIONS: { id: IslandTextMode; label: string; detail: string }[] = [
+  { id: "elapsed", label: "计时", detail: "已持续多久，由系统自己走" },
   { id: "status", label: "状态", detail: "模拟中 / 移动中 / 已暂停" },
   { id: "place", label: "地点名", detail: "查不到地名时退回坐标" },
   { id: "coordinate", label: "坐标", detail: "纬度, 经度" },
@@ -160,6 +171,10 @@ export const STORAGE_KEYS = {
   settings: "wloc_settings",
   activeCache: "wloc_active_cache",
   recovery: "wloc_session_recovery",
+  // 卡片上的恢复按钮与主脚本之间传话用，见 utils/storage.ts
+  sessionBeat: "wloc_session_beat",
+  restoreRequest: "wloc_restore_request",
+  restoreAck: "wloc_restore_ack",
 } as const;
 
 /** 地图图层可选项（id → 显示名） */

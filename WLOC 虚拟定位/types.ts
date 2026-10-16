@@ -51,6 +51,7 @@ export type MenuCorner = "topLeft" | "bottomLeft" | "bottomRight";
 
 /** 灵动岛收起态显示什么文字 */
 export type IslandTextMode =
+  | "elapsed"     // 已持续多久，系统计时
   | "status"      // 模拟中 / 移动中 / 已暂停
   | "place"       // 地点名
   | "coordinate"  // 坐标
@@ -67,6 +68,11 @@ export type IslandIconMode =
   | "none";
 
 /** 锁屏卡片的大标题显示什么 */
+/** 卡片与灵动岛的大标题（「位置模拟中」那一行）从哪来。 */
+export type CardStatusMode =
+  | "auto"    // 跟着当前状态走：位置模拟中 / 步行中 / 已暂停
+  | "custom"; // 固定用自己填的一句
+
 export type CardTitleMode =
   | "place"   // 地点名，查不到退回坐标
   | "coord"   // 始终坐标
@@ -86,6 +92,9 @@ export interface AppSettings {
   /** islandIcon 为 emoji 时用的字符 */
   islandEmoji: string;
   islandText: IslandTextMode;
+  cardStatus: CardStatusMode;
+  /** cardStatus 为 custom 时用的文案 */
+  cardCustomStatus: string;
   /** islandText 为 custom 时用的文本 */
   islandCustomText: string;
   /** 功能菜单落在哪个角 */

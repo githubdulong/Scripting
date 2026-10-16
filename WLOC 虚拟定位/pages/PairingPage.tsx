@@ -66,6 +66,8 @@ export function PairingPage() {
   function pairingCardState(code: string): SimulationState {
     return {
       kind: "pairing",
+    // 配对卡片的标题是固定的「配对 PIN」，不走自定义那套
+    title: "",
       pin: code,
       place: "",
       latitude: 0,
@@ -82,6 +84,7 @@ export function PairingPage() {
       compactIcon: "personalhotspot",
       compactIconIsEmoji: false,
       compactText: code,
+      compactTimer: false,
       restoreTint: "systemRed",
     };
   }

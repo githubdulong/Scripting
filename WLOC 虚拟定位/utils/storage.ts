@@ -115,6 +115,82 @@ export function clearRecovery(): void {
   Storage.remove(STORAGE_KEYS.recovery);
 }
 
+// ── 卡片恢复按钮 ↔ 主脚本 ─────────────────────────────────────────────
+//
+// 恢复按钮的 intent 跑在单独的环境里，碰不到主脚本手上的会话。而会话的心跳
+// 每 4 秒把假坐标重发一遍——intent 自己连上去发停止，几秒后就被盖回去。
+// 所以主脚本开着会话时，intent 只递话，由主脚本用现成的连接收尾，再回执。
+
+/** 恢复请求的处理结果；message 是失败时给人看的原因 */
+export interface RestoreAck {
+  id: string;
+  ok: boolean;
+  message?: string;
+}
+
+/** 主脚本会话进行中时周期性写入，intent 据此判断主脚本还在不在。 */
+export function markSessionBeat(): void {
+  Storage.set(STORAGE_KEYS.sessionBeat, Date.now());
+}
+
+export function clearSessionBeat(): void {
+  Storage.remove(STORAGE_KEYS.sessionBeat);
+}
+
+/** 距主脚本上次报平安过了多久（毫秒）；从没报过返回 Infinity。 */
+export function sessionBeatAge(): number {
+  const at = Storage.get<number>(STORAGE_KEYS.sessionBeat);
+  return at == null ? Infinity : Date.now() - at;
+}
+
+/** 请求多久不处理就作废。intent 等回执的上限是 10 秒，这里留足余量。 */
+const RESTORE_REQUEST_TTL_MS = 15_000;
+
+/** intent 发起恢复请求，返回请求编号，用来认领回执。 */
+export function requestRestore(): string {
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  Storage.set(STORAGE_KEYS.restoreRequest, id);
+  return id;
+}
+
+/**
+ * intent 等不到回执时撤回自己那条请求。
+ *
+ * 不撤的话它会一直躺在 storage 里：intent 超时后自己连设备停掉了，用户隔一会儿
+ * 重新开始模拟，主脚本的轮询取到这条陈年请求，当场把新会话停了。
+ * 带上 id 是防止误删——那时候可能已经是别人的请求了。
+ */
+export function withdrawRestoreRequest(id: string): void {
+  if (Storage.get<string>(STORAGE_KEYS.restoreRequest) === id) {
+    Storage.remove(STORAGE_KEYS.restoreRequest);
+  }
+}
+
+/**
+ * 主脚本取走待处理的恢复请求，取完即删；没有返回 null。
+ *
+ * 过期的直接丢掉：id 前缀就是发起时间，超过 TTL 说明 intent 早已放弃、
+ * 多半自己把位置恢复了，这时候再停一次只会打断用户新开的会话。
+ */
+export function takeRestoreRequest(): string | null {
+  const id = Storage.get<string>(STORAGE_KEYS.restoreRequest);
+  if (id == null) return null;
+  Storage.remove(STORAGE_KEYS.restoreRequest);
+  const issuedAt = Number(id.split("-")[0]);
+  if (Number.isFinite(issuedAt) && Date.now() - issuedAt > RESTORE_REQUEST_TTL_MS) return null;
+  return id;
+}
+
+export function ackRestore(ack: RestoreAck): void {
+  Storage.set(STORAGE_KEYS.restoreAck, ack);
+}
+
+/** 读编号为 id 的回执；还没回或是别的请求的回执都返回 null。 */
+export function loadRestoreAck(id: string): RestoreAck | null {
+  const ack = Storage.get<RestoreAck>(STORAGE_KEYS.restoreAck);
+  return ack?.id === id ? ack : null;
+}
+
 // ── 当前生效坐标缓存 ─────────────────────────────────────────────────
 
 // 读取上次模拟的位置，启动时用来把地图镜头摆回去

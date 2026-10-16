@@ -19,11 +19,13 @@ import {
 } from "scripting";
 import { OptionGroup } from "./SettingsControls";
 import type { AppSettings } from "../types";
-import { CARD_TITLE_OPTIONS, ISLAND_ICON_OPTIONS, ISLAND_TEXT_OPTIONS, ISLAND_TINT_OPTIONS } from "../constants";
+import { CARD_STATUS_OPTIONS, CARD_TITLE_OPTIONS, ISLAND_ICON_OPTIONS, ISLAND_TEXT_OPTIONS, ISLAND_TINT_OPTIONS } from "../constants";
 
 /** 预览用的文字。没有进行中的会话，所以速度/进度一类给示例值。 */
 function islandPreviewText(settings: AppSettings): string {
   switch (settings.islandText) {
+    case "elapsed":
+      return "12:34";
     case "status":
       return "模拟中";
     case "place":
@@ -56,13 +58,33 @@ export function SettingsCardStyle({
         header={<Text>锁屏卡片</Text>}
         footer={
           <Text foregroundStyle="tertiaryLabel">
-            卡片最上面那行大字。坐标始终显示在它下面，所以这里选「坐标」时
-            只会留一行，不会重复。
+            大标题默认跟着状态走（位置模拟中 / 步行中），想固定一句话就选自定义——
+            但暂停时仍会显示「已暂停」，不然看不出状态。
+            副标题是它下面那行小字；选「坐标」时底行的精确坐标会省掉，不重复显示。
           </Text>
         }
       >
+        {/*
+          大标题在上、地名在下，设置项也照这个顺序排——不然用户得对着卡片
+          反推哪一项管哪一行。
+        */}
         <OptionGroup
-          title="标题内容"
+          title="大标题"
+          options={CARD_STATUS_OPTIONS}
+          selected={current.cardStatus}
+          onPick={(id) => update({ cardStatus: id })}
+        />
+        {current.cardStatus === "custom" ? (
+          <TextField
+            title=""
+            value={current.cardCustomStatus}
+            onChanged={(value: string) => update({ cardCustomStatus: value })}
+            prompt="想固定显示的一句话"
+          />
+        ) : null}
+
+        <OptionGroup
+          title="副标题"
           options={CARD_TITLE_OPTIONS}
           selected={current.cardTitle}
           onPick={(id) => update({ cardTitle: id })}

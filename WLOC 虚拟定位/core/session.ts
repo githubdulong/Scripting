@@ -25,6 +25,12 @@ const PORT_SCAN_TIMEOUT = 450;
 const PORT_CACHE_KEY = "wloc_pairing_port_v1";
 /** 位置下发的心跳间隔，与 wloc 的 4 秒一致：设备久不收就会把会话收掉。 */
 const KEEPALIVE_INTERVAL = 4000;
+/*
+  心跳连续失败多少次才判定会话真的断了。
+  4 秒一拍 × 4 = 16 秒宽限，足够跨过关飞行模式、WiFi 转蜂窝这类网络切换；
+  真断了也就多等十几秒，比动不动拆隧道重建划算得多。
+*/
+const KEEPALIVE_MAX_MISSES = 4;
 
 export type StatusReporter = (message: string) => void;
 
@@ -548,11 +554,23 @@ async function openTunnelWithDiagnostics(
 
   try {
     debugLog("tunnel", `openRSDTunnel host=${endpoint.host} port=${firstPort}`);
-    const tunnel = await VPN.localDevVPN.openRSDTunnel({
-      host: endpoint.host,
-      port: firstPort,
-      preSharedKey,
-    });
+    /*
+      必须包超时。
+
+      openRSDTunnel 自己不超时：对端不回 TLS 握手时它就一直挂着，既不成功也不
+      失败。飞行模式下正是这样——界面停在「建立加密隧道…」，上层的重试循环
+      以为这一轮还在跑，于是再也不发起下一轮（蜂窝引导就栽在这儿，试两次就死）。
+      15 秒：正常建隧道是百毫秒级，这个值只用来兜住挂死。
+    */
+    const tunnel = await withTimeout(
+      VPN.localDevVPN.openRSDTunnel({
+        host: endpoint.host,
+        port: firstPort,
+        preSharedKey,
+      }),
+      15000,
+      `建立加密隧道超时（端口 ${firstPort}）`,
+    );
     debugLog("tunnel", "隧道已建立", JSON.stringify(await tunnel.getState()));
     return tunnel;
   } catch (error) {
@@ -876,16 +894,43 @@ function createHandle(context: {
   }
 
   if (context.keepAlive) {
+    /*
+      心跳失败不等于会话完了，得先宽限几拍。
+
+      原先一失败就 shutdown()，而它会把 dtx、tunnel、pairingStream 一起关掉——
+      隧道是我们自己毁的，上层想重连就只能从配对握手开始整套重来，又慢又容易
+      再失败。而最常见的失败根本不是掉线，是网络切换的那一两秒（关掉飞行模式、
+      WiFi 转蜂窝），隧道本身好端端的，下一拍就能恢复。
+
+      所以连续失败到上限才拆链。原生那版同样只在「隧道与服务仍在」时做轻量重连，
+      这里是同一个思路的下沉实现——让隧道活着，重连就不必发生。
+    */
+    let misses = 0;
     keepalive = setInterval(() => {
       if (stopped) return;
-      void enqueue(() => context.simulation.set(latitude, longitude)).catch(async (error) => {
-        if (stopped) return;
-        stopped = true;
-        await shutdown();
-        context.onFailure?.(
-          `定位会话已中断：${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
+      void enqueue(() => context.simulation.set(latitude, longitude))
+        .then(() => {
+          if (misses > 0) {
+            debugLog("dvt", `心跳恢复（此前连续失败 ${misses} 次）`);
+            misses = 0;
+          }
+        })
+        .catch(async (error) => {
+          if (stopped) return;
+          misses += 1;
+          if (misses < KEEPALIVE_MAX_MISSES) {
+            debugLog(
+              "dvt",
+              `心跳第 ${misses} 次失败，隧道未关，等下一拍：${describeError(error)}`,
+            );
+            return;
+          }
+          stopped = true;
+          await shutdown();
+          context.onFailure?.(
+            `定位会话已中断：${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
     }, KEEPALIVE_INTERVAL);
   }
 
