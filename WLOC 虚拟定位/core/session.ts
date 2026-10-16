@@ -108,13 +108,53 @@ function wrapTunnelConnection(connection: VPNRSDConnection): ByteStream {
  * 但脚本也不会替用户关掉 Scripting 自己的 VPN——那条 VPN 可能正是用户在用的代理，
  * 只提示，不代劳。
  */
+/**
+ * 读自身隧道状态，撞上并发变更就再读一次。
+ *
+ * 这个 API 用 `expectedState` 做乐观并发控制：读的那一瞬间配置被别处改动
+ * （代理工具连接 / 断开、系统切换 VPN），就抛
+ * `LocalDevVPN settings or the active configuration changed. Read again before saving.`
+ * ——它字面上就在说「再读一次」。重试一次足够跨过那个瞬间；再不行才是真有问题。
+ *
+ * 2026-10-16 真机（iOS 27.0.1 + 代理模式）上，这一下没有重试直接把整个启动
+ * 打断了，而且连试三次都卡在同一行。
+ */
+async function readLocalDevState(): Promise<VPNLocalDevState> {
+  try {
+    return await VPN.localDevVPN.getState();
+  } catch (error) {
+    debugLog("vpn", "读自身隧道状态撞上并发变更，重读一次", describeError(error));
+    await delay(600);
+    return VPN.localDevVPN.getState();
+  }
+}
+
 async function ensureTunnelReady(endpoint: TunnelEndpoint, log: StatusReporter): Promise<void> {
   if (endpoint.source === "proxyApp") {
-    const state = await VPN.localDevVPN.getState();
-    debugLog("vpn", "代理模式，自身隧道状态", JSON.stringify(state));
+    /*
+      读自身隧道状态是**可选的**，读不到也要往下走。
+
+      这里以前是裸的 `await VPN.localDevVPN.getState()`，一抛错整个启动就完了。
+      真机实测（2026-10-16，iOS 27.0.1 + 代理模式）：它持续抛
+      `LocalDevVPN settings or the active configuration changed. Read again
+      before saving.`——那是乐观并发控制的提示，意思是「这次没读到」，
+      而不是「隧道坏了」。用户那边三次重试全挂在这一行上，从打印「隧道来源」
+      到报错只隔 37 毫秒，连下一条日志都没来得及出。
+
+      而这个 state 只喂给两件可选的事：提示一句自身 VPN 还连着、以及看 enabled
+      要不要打开开关。代理模式下那条隧道本来就不归我们管，为了两句提示把整条
+      路堵死完全不值。下面 setEnabled 失败时早就知道「仍继续尝试」，这里却没有。
+    */
+    let state: VPNLocalDevState | null = null;
+    try {
+      state = await readLocalDevState();
+      debugLog("vpn", "代理模式，自身隧道状态", JSON.stringify(state));
+    } catch (error) {
+      debugLog("vpn", "代理模式读自身隧道状态失败，跳过（不影响代理提供的回环）", describeError(error));
+    }
 
     // Scripting 自己的 VPN 还连着就等于占着唯一的 VPN 名额，代理工具根本起不来。
-    if (state.vpnStatus === "connected") {
+    if (state?.vpnStatus === "connected") {
       log("注意：Scripting 自己的 VPN 仍在连接，代理工具可能起不来");
       debugLog(
         "vpn",
@@ -130,7 +170,9 @@ async function ensureTunnelReady(endpoint: TunnelEndpoint, log: StatusReporter):
       前者必须让给代理工具，后者只是个功能开关——开着它不会去抢 VPN 名额，
       却是 openRSDTunnel 的前提之一。以前这里一个都没碰，等于少开了一半。
     */
-    if (!state.enabled) {
+    // 状态没读到就不碰这个开关：setEnabled 要 expectedState 做并发校验，
+    // 拿不到它硬调只会再撞一次同样的错。交给 openRSDTunnel 去报真正的问题。
+    if (state && !state.enabled) {
       log("启用 LocalDevVPN 开关…");
       try {
         const next = await VPN.localDevVPN.setEnabled(true, { expectedState: state.expectedState });
@@ -195,7 +237,7 @@ async function ensureLocalDevVPN(log: StatusReporter): Promise<VPNLocalDevState>
 }
 
 async function startLocalDevVPN(log: StatusReporter): Promise<VPNLocalDevState> {
-  let state = await VPN.localDevVPN.getState();
+  let state = await readLocalDevState();
   debugLog("vpn", "初始状态", JSON.stringify(state));
   if (state.effectiveStatus === "active") return state;
 
@@ -224,7 +266,7 @@ async function startLocalDevVPN(log: StatusReporter): Promise<VPNLocalDevState> 
 
   for (let attempt = 0; attempt < 20; attempt++) {
     await delay(500);
-    state = await VPN.localDevVPN.getState();
+    state = await readLocalDevState();
     debugLog("vpn", `第 ${attempt + 1} 次轮询`, JSON.stringify(state));
     if (state.effectiveStatus === "active") return state;
     if (state.problem) log(`隧道：${state.problem}`);
@@ -598,6 +640,29 @@ export interface DiagnosticItem {
   label: string;
   value: string;
   ok: boolean | null;
+  /**
+   * 这一项是不是「链路通不通」的硬证据。
+   *
+   * 握手成功就说明整条路都走通了，前面某一项读状态失败也只是噪音。界面据此
+   * 判断该不该说「第一个红叉就是断点」——不然用户会被一个无关的红叉带去瞎查。
+   */
+  critical?: boolean;
+}
+
+/**
+ * 把「读的时候状态变了」这类并发错误翻译成人话。
+ *
+ * `VPN.getState` / `localDevVPN.getState` 在读取期间配置被别处改动时，抛的是
+ * LocalDevVPN settings or the active configuration changed. Read again before saving.
+ * 这种话——它说的是「这次没读到」，不是「隧道坏了」。代理工具正在连接、或者
+ * 系统在切换 VPN 时很容易撞上，诊断页一进来就跑，撞上的概率不低。
+ */
+function describeStateError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/changed.*(read|saving)|while reading/i.test(message)) {
+    return "读取时状态正在变化，没读到（代理工具或系统正在切换 VPN 时常见，不影响连接）";
+  }
+  return describeError(error);
 }
 
 /**
@@ -629,7 +694,7 @@ export async function collectDiagnostics(options: {
 
   log("查询本机隧道状态…");
   try {
-    const state = await VPN.localDevVPN.getState();
+    const state = await readLocalDevState();
     items.push({
       label: "本机隧道",
       value: `${state.effectiveStatus}（VPN ${state.vpnStatus}）`,
@@ -642,7 +707,17 @@ export async function collectDiagnostics(options: {
     });
     if (state.problem) items.push({ label: "隧道报错", value: state.problem, ok: false });
   } catch (error) {
-    items.push({ label: "本机隧道", value: describeError(error), ok: false });
+    items.push({
+      label: "本机隧道",
+      value: describeStateError(error),
+      /*
+        代理模式下这条隧道不归我们管，读不到也不是故障——和上面读成功时
+        一样给 null。以前这里一律 false，于是代理模式下只要撞上一次并发
+        读取失败就报红叉，而底下「配对端口可达 / 设备握手成功」全是绿的，
+        用户被那句「第一个红叉就是断点所在」带着去查一条根本没在用的隧道。
+      */
+      ok: endpoint.source === "proxyApp" ? null : false,
+    });
   }
 
   /*
@@ -668,7 +743,7 @@ export async function collectDiagnostics(options: {
     });
     if (vpn.problem) items.push({ label: "VPN 报错", value: vpn.problem, ok: false });
   } catch (error) {
-    items.push({ label: "Scripting 的 VPN", value: describeError(error), ok: null });
+    items.push({ label: "Scripting 的 VPN", value: describeStateError(error), ok: null });
   }
 
   log("探测配对端口…");
@@ -711,7 +786,7 @@ export async function collectDiagnostics(options: {
       stream = await connectTCP(reachable.host, reachable.port, 4000);
       const client = new RemotePairingClient(new RpPairingSocket(stream));
       const peer = await withTimeout(client.attemptPairVerify(), 6000, "握手超时");
-      items.push({ label: "设备握手", value: "成功", ok: true });
+      items.push({ label: "设备握手", value: "成功", ok: true, critical: true });
       // 这是 RemotePairing 的 wire protocol version，和 iOS 版本没关系——
       // 两者数字撞上了（设备报 26、系统也叫 iOS 26），被当成系统版本问过一次。
       items.push({
@@ -738,7 +813,7 @@ export async function collectDiagnostics(options: {
         ok: null,
       });
     } catch (error) {
-      items.push({ label: "设备握手", value: describeError(error), ok: false });
+      items.push({ label: "设备握手", value: describeError(error), ok: false, critical: true });
     } finally {
       if (stream) {
         try {
@@ -776,7 +851,7 @@ async function openTunnelWithDiagnostics(
     结果还是弹我们自己那句「只接受 Scripting 自己的回环」，用户以为是应用没改。
     现在代理模式下只记一笔就放行，成不成交给 openRSDTunnel 自己说。
   */
-  const preflight = await VPN.localDevVPN.getState();
+  const preflight = await readLocalDevState();
   debugLog("tunnel", `开隧道前自身状态（来源=${endpoint.source}）`, JSON.stringify(preflight));
   if (endpoint.source === "builtIn" && preflight.effectiveStatus !== "active") {
     throw new Error(
@@ -812,7 +887,15 @@ async function openTunnelWithDiagnostics(
     debugLog("tunnel", "openRSDTunnel 失败", describeError(error));
   }
 
-  debugLog("tunnel", "此时的本机隧道状态", JSON.stringify(await VPN.localDevVPN.getState()));
+  /*
+    记一笔当时的隧道状态。读失败不能让它抛出去——这里已经在失败路径上了，
+    再抛一个「读状态失败」会把真正的隧道错误整个盖掉。
+  */
+  try {
+    debugLog("tunnel", "此时的本机隧道状态", JSON.stringify(await readLocalDevState()));
+  } catch (error) {
+    debugLog("tunnel", "此时的本机隧道状态读不到", describeError(error));
+  }
 
   // 这里曾经自动跑一次 TLS ClientHello 探测来判断锅在哪一侧。那是为了取证
   // openRSDTunnel 的 Failure 6，该 bug 已修；而探测会消费掉一次性的隧道监听，
@@ -859,7 +942,7 @@ async function openLocationChannel(
   // 自身的反射地址只作记录。2026-10-16 实测：代理工具模式下自身隧道 inactive、
   // effectiveAddresses 为空，openRSDTunnel 照样能建起来——它已经不要求对端地址
   // 出现在自己的反射列表里了。所以这里不再当成「可能被拒」的征兆。
-  const vpnState = await VPN.localDevVPN.getState();
+  const vpnState = await readLocalDevState();
   debugLog("vpn", "自身生效地址", JSON.stringify(vpnState.effectiveAddresses));
   if (!vpnState.effectiveAddresses.some((address) => address.split("/")[0] === endpoint.host)) {
     debugLog(

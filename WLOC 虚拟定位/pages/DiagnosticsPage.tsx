@@ -108,6 +108,13 @@ export function DiagnosticsPage() {
   }, []);
 
   const failed = items.filter((item) => item.ok === false);
+  /*
+    链路到底通没通，只认带 `critical` 标记的那几项（目前就是「设备握手」）。
+
+    别拿 `failed.length === 0` 当通的标准：读 VPN 状态时撞上并发变更会留一个
+    红叉，而握手照样是成的。
+  */
+  const linkOk = items.some((item) => item.critical && item.ok === true);
 
   return (
     <NavigationStack>
@@ -152,6 +159,19 @@ export function DiagnosticsPage() {
               failed.length === 0 ? (
                 <Text font="caption2" foregroundStyle="tertiaryLabel">
                   各项正常。若仍连不上，多半卡在隧道握手那一步，详见 scripting-cli 终端里的日志。
+                </Text>
+              ) : linkOk ? (
+                /*
+                  有红叉，但握手是成的。
+
+                  这两件事同时为真是常态：读 VPN 状态时撞上「配置正在变化」就会
+                  留一个红叉，而那条隧道在代理模式下本来也不归我们管。以前这里
+                  一律说「第一个红叉就是断点所在」，于是用户拿着一条已经走通的
+                  链路去查一个无关的红叉。握手通了就直说通了。
+                */
+                <Text font="caption2" foregroundStyle="systemGreen">
+                  设备握手已成功，链路是通的。上面 {failed.length} 项异常不影响连接，
+                  多半是读状态时撞上了系统正在切换 VPN。
                 </Text>
               ) : (
                 <Text font="caption2" foregroundStyle="systemOrange">
