@@ -1,4 +1,34 @@
 {
+  "name": "WLOC 虚拟定位",
+  "localizedNames": {
+    "fr": "",
+    "pt": "",
+    "ru": "",
+    "zh": "WLOC 虚拟定位",
+    "en": "WLOC",
+    "ja": "",
+    "de": "",
+    "es": "",
+    "it": ""
+  },
+  "description": "用苹果官方开发者接口模拟本机定位。界面基于 BlackCCCat 的同名脚本",
+  "localizedDescriptions": {
+    "fr": "",
+    "pt": "",
+    "ru": "",
+    "zh": "用苹果官方开发者接口模拟本机定位。界面基于 BlackCCCat 的同名脚本",
+    "en": "Simulate this device's location via Apple's developer interface. UI based on BlackCCCat's script",
+    "ja": "",
+    "de": "",
+    "es": "",
+    "it": ""
+  },
+  "version": "2.3.2",
+  "author": {
+    "name": "ios151",
+    "email": null,
+    "homepage": "https://github.com/ios151"
+  },
   "contributors": [
     {
       "name": "ios151",
@@ -11,19 +41,11 @@
       "homepage": "https://github.com/BlackCCCat/Scripting-Scripts"
     }
   ],
-  "version": "2.3.1",
-  "localizedNames": {
-    "fr": "",
-    "pt": "",
-    "ru": "",
-    "zh": "WLOC 虚拟定位",
-    "en": "WLOC",
-    "ja": "",
-    "de": "",
-    "es": "",
-    "it": ""
+  "remoteResource": {
+    "url": "https://raw.githubusercontent.com/ios151/Scripting/main/dist/WLOC.zip"
   },
-  "name": "WLOC 虚拟定位",
+  "icon": "location.fill.viewfinder",
+  "iconImage": "https://raw.githubusercontent.com/ios151/-/main/wloc.png",
   "color": "rgba(52, 199, 89,1)",
   "entry": "index.tsx",
   "permissions": [
@@ -31,29 +53,6 @@
     "localDevVPN",
     "location"
   ],
-  "author": {
-    "name": "ios151",
-    "email": null,
-    "homepage": "https://github.com/ios151"
-  },
-  "localizedDescriptions": {
-    "fr": "",
-    "pt": "",
-    "ru": "",
-    "zh": "用苹果官方开发者接口模拟本机定位。界面基于 BlackCCCat 的同名脚本",
-    "en": "Simulate this device's location via Apple's developer interface. UI based on BlackCCCat's script",
-    "ja": "",
-    "de": "",
-    "es": "",
-    "it": ""
-  },
   "intentInputTypes": [],
-  "description": "用苹果官方开发者接口模拟本机定位。界面基于 BlackCCCat 的同名脚本",
-  "iconImage": "https://raw.githubusercontent.com/ios151/-/main/wloc.png",
-  "icon": "location.fill.viewfinder",
-  "runInApp": true,
-  "remoteResource": {
-    "url": "https://raw.githubusercontent.com/ios151/Scripting/main/dist/WLOC.zip"
-  },
-  "license": "GPL-3.0-or-later"
+  "runInApp": true
 }

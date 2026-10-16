@@ -4,7 +4,7 @@
 
 脚本目录直接放仓库根，发布产物在 `dist/`。
 
-## WLOC 虚拟定位 2.3.1
+## WLOC 虚拟定位 2.3.2
 
 ### ⬇️ [点此一键安装](https://www.scripting.fun/import_scripts/?urls=%5B%22https%3A%2F%2Fraw.githubusercontent.com%2Fios151%2FScripting%2Fmain%2Fdist%2FWLOC.zip%22%5D)
 
@@ -39,6 +39,18 @@
 **排查**
 
 「连接状态」逐项体检，定位卡在哪一环一目了然。运行日志常驻内存，一键导出成 txt——**导出会自动脱敏**，坐标降到 1 位小数、地名和自定义文本打码、地址和设备标识只留前缀。
+
+### 2.3.2 修了什么
+
+- **「远程资源」里的链接被清空、不再自动检查更新** —— 2.3.0 跟着 GPL 一起往
+  `script.json` 塞了个 `license` 字段，而那不是 Scripting 定义的字段（文档里
+  `Script.metadata` 只列了 name / version / author / contributors /
+  remoteResource 等几项）。多出来的字段会让元数据解析不按预期走，表现就是
+  `remoteResource.url` 读不到。许可信息本来也该由 LICENSE 和 NOTICE.md 承担，
+  不该挤进 script.json
+
+> 从 2.3.0 或 2.3.1 升上来的话，装完去「远程资源」看一眼链接回来没有；
+> 空的话手动填 `https://raw.githubusercontent.com/ios151/Scripting/main/dist/WLOC.zip`
 
 ### 2.3.1 改了什么
 
