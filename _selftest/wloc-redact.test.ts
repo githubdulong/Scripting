@@ -100,5 +100,30 @@ console.log("\n[边界]");
   );
 }
 
+/*
+  Bonjour 公告现在连地址一起记（只认端口连不上蜂窝，见 core/bonjour.ts）。
+  这几行是新增的、必然会出现在反馈日志里的格式——地址得脱敏，端口和耗时
+  要留着，否则这份日志就没法用来排查了。
+*/
+console.log("\n[Bonjour 公告与扫描]");
+{
+  const announce = redactLog(
+    "[wloc:scan] Bonjour 公告端口 49152，地址 203.0.113.9, fe80::1c3d:9a2f:0:1234",
+  );
+  check("公告里的 IPv4 被打码", !announce.includes("203.0.113.9"));
+  check("公告里的 IPv6 被打码", !announce.includes("1c3d:9a2f"));
+  check("公告端口保留", announce.includes("49152"));
+
+  const scanned = redactLog("[wloc:scan] 203.0.113.9 扫完 2049 个端口，耗时 2559ms，开放：50370");
+  check("扫描行的地址被打码", !scanned.includes("203.0.113.9"));
+  check("扫到的端口保留", scanned.includes("50370"));
+  check("扫描耗时保留", scanned.includes("2559ms"));
+
+  check(
+    "公告没带地址时原样说明",
+    redactLog("[wloc:scan] Bonjour 公告端口 49152，地址 未提供").includes("未提供"),
+  );
+}
+
 console.log(`\n通过 ${passed} 项，失败 ${failed} 项`);
 if (failed > 0) process.exit(1);

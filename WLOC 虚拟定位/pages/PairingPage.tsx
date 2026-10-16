@@ -25,6 +25,7 @@ import {
   Navigation,
   LiveActivity,
 } from "scripting";
+import { MessageSheet } from "./MessageSheet";
 import { toHex, utf8 } from "../core/bytes";
 import { debugLog, describeError } from "../core/debug";
 import {
@@ -54,6 +55,8 @@ export function PairingPage() {
   const [pin, setPin] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
   const [pairingInProgress, setPairingInProgress] = useState(false);
+  /** 「配对这台设备」的操作说明浮层。 */
+  const [showIntro, setShowIntro] = useState(false);
   /** 显示 PIN 的卡片。和定位模拟共用同一个注册，靠 kind 区分。 */
   const pinActivity = useObservable(() => SimulationLiveActivity());
 
@@ -98,21 +101,18 @@ export function PairingPage() {
    *
    * 广播期间要切到「设置」去输码，脚本会被切到后台——整段流程靠后台保活撑着。
    */
-  async function startDevicePairing() {
-    const ready = await Dialog.confirm({
-      title: "配对这台设备",
-      message:
-        "接下来会生成一个六位 PIN，并把本机广播成一台可配对的电脑。\n\n" +
-        "拿到 PIN 后，去：\n" +
-        "设置 → 隐私与安全性 → 开发者 → 配对\n\n" +
-        "在列表里选「Scripting WLOC」，输入 PIN。\n" +
-        "系统会先要你输一次 iPhone 解锁密码，这是它自己的验证，正常。\n\n" +
-        "广播三分钟后自动结束。PIN 会同时显示在本页和灵动岛上，切到设置也看得到。",
-      confirmLabel: "我知道了，开始",
-      cancelLabel: "取消",
-    });
-    if (!ready) return;
+  /*
+    说明原先走系统 Dialog.confirm，十几行文案被压成小字还不给滚动，
+    「设置 → 隐私与安全性 → 开发者 → 配对」这条最该看清的路径挤成一团。
+    现在换成和其他提示同一个半屏浮层（MessageSheet），正文可滚、可往上拉开。
+  */
+  function startDevicePairing() {
+    setShowIntro(true);
+  }
 
+  /** 用户在说明里点了「我知道了，开始」才真的跑。 */
+  async function runDevicePairing() {
+    setShowIntro(false);
     setPairingInProgress(true);
     setIsError(false);
     let lease = false;
@@ -262,6 +262,26 @@ export function PairingPage() {
         navigationBarTitleDisplayMode="inline"
         toolbar={{
           cancellationAction: <Button title="关闭" action={() => dismiss()} />,
+        }}
+        sheet={{
+          content: (
+            <MessageSheet
+              tone="info"
+              message={
+                "配对这台设备\n" +
+                "接下来会生成一个六位 PIN，并把本机广播成一台可配对的电脑。\n\n" +
+                "拿到 PIN 后，去：\n" +
+                "设置 → 隐私与安全性 → 开发者 → 配对\n\n" +
+                "在列表里选「Scripting WLOC」，输入 PIN。\n" +
+                "系统会先要你输一次 iPhone 解锁密码，这是它自己的验证，正常。\n\n" +
+                "广播三分钟后自动结束。PIN 会同时显示在本页和灵动岛上，切到设置也看得到。"
+              }
+              confirm={{ label: "我知道了，开始", onConfirm: () => void runDevicePairing() }}
+              onDismiss={() => setShowIntro(false)}
+            />
+          ),
+          isPresented: showIntro,
+          onChanged: setShowIntro,
         }}
       >
         <Section header={<Text font="caption" foregroundStyle="secondaryLabel">配对状态</Text>}>

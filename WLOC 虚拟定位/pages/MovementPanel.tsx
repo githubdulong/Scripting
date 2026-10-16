@@ -121,6 +121,9 @@ export function MovementPanel({
 
         状态条渲染在 List 最底部，而触发按钮分散在中间——面板一长，
         用户点完根本看不到那行红字，体感就是「点了没反应」。
+
+        这里保留系统 alert，没跟着主界面换成 MessageSheet：这个面板自己就活在
+        一个 sheet 里，再叠一层 sheet 会把它整个盖住，反而更难读。
       */
       await Dialog.alert({ title: "操作失败", message });
     } finally {

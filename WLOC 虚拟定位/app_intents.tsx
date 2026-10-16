@@ -79,6 +79,10 @@ export const RestoreLocationIntent = AppIntentManager.register({
  * 其实只有一件事——打开 App 再试，那就只说这个。
  */
 function shortReason(failure: string): string {
+  // 「只绑回环」是能确诊的那一种，直接给出唯一有效的动作，不必让用户先打开 App。
+  if (failure.includes("只绑在回环地址")) {
+    return "配对服务没绑网络接口。开关一次飞行模式，再打开 WLOC 重试。";
+  }
   if (failure.includes("拒绝了连接") || failure.includes("ECONNREFUSED")) {
     return "连不上设备。用蜂窝数据时常见，打开 WLOC 按提示操作一次即可。";
   }

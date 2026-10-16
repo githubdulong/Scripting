@@ -3,8 +3,9 @@
 // 与 wloc（iOS）同一条链路，区别只在隧道那一段：
 // wloc 自己实现 TLS-PSK + CDTunnel，这里交给 VPN.localDevVPN.openRSDTunnel。
 //
-// 设备的 RemotePairing 端口本应由 Bonjour 公布，Scripting 没有 mDNS 接口，
-// 只能扫端口再用 RPPairing 握手确认——握手帧头对不上就不是它。
+// 设备的 RemotePairing 落点由 Bonjour 公布：端口和地址都得照它说的办，
+// 只认端口、把连接一律打到隧道对端，蜂窝下必然吃 ECONNREFUSED。
+// 公告拿不到时退回全段扫描，再用 RPPairing 握手确认——帧头对不上就不是它。
 
 import { dvtPort, discoverServices } from "./rsd";
 import { debugLog, describeError } from "./debug";
@@ -12,17 +13,36 @@ import { DtxConnection } from "./dtx";
 import { LocationSimulation } from "./location";
 import { RemotePairingClient, RpPairingSocket, type PeerHandshakeInfo } from "./rppairing";
 import { connectTCP, probeTCP } from "./tcp";
-import { discoverPairingPort } from "./bonjour";
+import { discoverPairingService } from "./bonjour";
 import { probeTlsPsk } from "./tlsprobe";
 import { delay, withTimeout, type ByteStream } from "./stream";
 import { loadPairing, type PairingRecord } from "./pairing";
 import type { TunnelSource } from "../types";
 
+/*
+  端口扫描的范围与节奏。
+
+  iOS 的动态端口是 49152–65535，全扫一遍不现实；但原先只扫到 49400（249 个，
+  占整个范围的 1.5%），而实测日志里隧道端口出现过 50724、50857、50343——
+  都在旧范围之外。配对服务重启后未必还落在 49152，扫不到就只能报「找不到」，
+  还分不清是服务没起还是端口搬了。
+
+  现在扫到 51200（2048 个），并发提到 64、单次超时压到 200 ms：
+  2048 / 64 × 200ms ≈ 6.4 秒，比原先慢两秒，换来 8 倍覆盖。
+  这条路不依赖 mDNS，是蜂窝下唯一走得通的发现方式，值得这点时间。
+*/
 const PORT_RANGE_START = 49152;
-const PORT_RANGE_END = 49400;
-const PORT_SCAN_BATCH = 24;
-const PORT_SCAN_TIMEOUT = 450;
-const PORT_CACHE_KEY = "wloc_pairing_port_v1";
+const PORT_RANGE_END = 51200;
+const PORT_SCAN_BATCH = 64;
+const PORT_SCAN_TIMEOUT = 200;
+/*
+  上次握手成功的落点，存「地址 + 端口」。
+
+  v1 只存端口，因为那时所有连接都打到隧道对端。现在地址也会变（蜂窝下走的
+  往往不是 10.7.0.1），光记端口会把下次连接导到错的地址上去。v1 的残留读不出
+  就当没有，不必迁移。
+*/
+const PORT_CACHE_KEY = "wloc_pairing_target_v2";
 /** 位置下发的心跳间隔，与 wloc 的 4 秒一致：设备久不收就会把会话收掉。 */
 const KEEPALIVE_INTERVAL = 4000;
 /*
@@ -31,6 +51,11 @@ const KEEPALIVE_INTERVAL = 4000;
   真断了也就多等十几秒，比动不动拆隧道重建划算得多。
 */
 const KEEPALIVE_MAX_MISSES = 4;
+/**
+ * 「只绑回环」这个判定在失败文案里的标记。
+ * 引导和锁屏通知都靠这句话认出这类失败并换成短提示，改文案时别把它改没了。
+ */
+const LOOPBACK_ONLY_MARK = "只绑在回环地址上";
 
 export type StatusReporter = (message: string) => void;
 
@@ -117,12 +142,22 @@ async function ensureTunnelReady(endpoint: TunnelEndpoint, log: StatusReporter):
     }
 
     log("检查代理工具提供的回环地址…");
-    // 不逐个扫端口，只确认对端地址有响应——配对端口随后会扫。
+    /*
+      只记一笔，不据此拦截。
+
+      探的是 49152 这一个端口，而配对服务重启后未必还在那儿——服务一搬家，
+      这里就报「暂不可达」，吓人一跳却什么也没说明。真正判断可不可达要靠
+      后面的扫描，它会遍历整个范围。
+
+      之所以还留着：`ECONNREFUSED` 和超时的区别很有价值——前者说明回环通了
+      只是没服务，后者说明代理根本没把这个地址接回来。两种情况要做的事完全不同。
+    */
     const reachable = await probeTCP(endpoint.host, PORT_RANGE_START, 1500);
-    debugLog("vpn", `代理模式下 ${endpoint.host}:${PORT_RANGE_START} ${reachable ? "可达" : "暂不可达"}`);
-    if (!reachable) {
-      log(`${endpoint.host} 暂无响应，仍继续尝试…`);
-    }
+    debugLog(
+      "vpn",
+      `代理模式下 ${endpoint.host}:${PORT_RANGE_START} ${reachable ? "可达" : "无响应"}` +
+        "（只探这一个端口，服务可能在别的端口上，以扫描结果为准）",
+    );
     return;
   }
 
@@ -136,7 +171,30 @@ async function ensureTunnelReady(endpoint: TunnelEndpoint, log: StatusReporter):
  * effectiveAddresses 一并带出来给调用方核对——纯 TCP 能连通不代表原生侧认这个地址。
  */
 
+/*
+  正在进行的 VPN 启动。
+
+  `VPN.start` 要几秒才落定，这期间再调一次会直接报
+  「A VPN control operation is already in progress.」。蜂窝引导的重试是
+  500 ms 一轮，于是前三轮全撞在这上面，白白浪费了十秒——第四轮才赶上空档。
+
+  用一个模块级的 Promise 把并发调用并到同一次启动上：后来者等前一次的结果，
+  而不是再发一次。
+*/
+let vpnStarting: Promise<VPNLocalDevState> | null = null;
+
 async function ensureLocalDevVPN(log: StatusReporter): Promise<VPNLocalDevState> {
+  if (vpnStarting) {
+    debugLog("vpn", "已有启动操作在跑，等它的结果");
+    return vpnStarting;
+  }
+  vpnStarting = startLocalDevVPN(log).finally(() => {
+    vpnStarting = null;
+  });
+  return vpnStarting;
+}
+
+async function startLocalDevVPN(log: StatusReporter): Promise<VPNLocalDevState> {
   let state = await VPN.localDevVPN.getState();
   debugLog("vpn", "初始状态", JSON.stringify(state));
   if (state.effectiveStatus === "active") return state;
@@ -175,39 +233,93 @@ async function ensureLocalDevVPN(log: StatusReporter): Promise<VPNLocalDevState>
   throw new Error("本机隧道迟迟没有生效。请先断开其他 VPN / 代理，再试一次。");
 }
 
+/*
+  这里曾经有一套「重建隧道自愈」：判定到「只绑回环」就 VPN.stop() → start()，
+  指望 utun 重建能让 remotepairingd 重新枚举接口，省掉用户那趟控制中心。
+
+  2026-10-16 实测无效，已删。重建完公告里依然只有 127.0.0.1 和 ::1——
+  remotepairingd 要的不是「有接口变化」，而是蜂窝/WiFi 接口本身重建，
+  那不是 utun 能顶替的。别再往这个方向试了。
+*/
+
+/** 一个待试的落点。地址未必是隧道对端——见 candidateTargets。 */
+interface PairingTarget {
+  host: string;
+  port: number;
+}
+
+function sameTarget(a: PairingTarget, b: PairingTarget): boolean {
+  return a.host === b.host && a.port === b.port;
+}
+
+function pushTarget(list: PairingTarget[], target: PairingTarget): void {
+  if (!list.some((item) => sameTarget(item, target))) list.push(target);
+}
+
 /**
- * 缓存端口优先，然后是 Bonjour 公告的端口，最后才是全段扫描。
+ * 缓存落点优先，然后是 Bonjour 公告，最后才是全段扫描。
  *
- * 扫 49152-49400 要来回几百次 TCP 探测，而 Bonjour 一次解析就能直接拿到端口，
+ * 扫 2048 个端口要来回几千次 TCP 探测，而 Bonjour 一次解析就直接拿到端口，
  * 还能用设备 IRK 校验公告确实来自这台设备。只是它依赖组播，不一定可用——
  * 旧记录没有 IRK、或者组播被挡住时就只能退回扫描。
+ *
+ * **公告里的地址和端口一样重要。** 上一版只取端口，一律连隧道对端
+ * （10.7.0.1），WiFi 下没问题，蜂窝下必然 ECONNREFUSED：设备的
+ * remotepairingd 没绑到那条回环上，内核直接回 RST。而同一份公告里带着它
+ * 真正在听的地址，试一下就能通。现在把「公告地址」排在对端地址之后一起试，
+ * 这正是 wloc（iOS）的做法。
  */
-async function candidatePorts(endpoint: TunnelEndpoint, log: StatusReporter): Promise<number[]> {
-  const ports: number[] = [];
-  const cached = Number(Storage.get<number>(PORT_CACHE_KEY) ?? 0);
-  if (cached > 0) ports.push(cached);
+async function candidateTargets(endpoint: TunnelEndpoint, log: StatusReporter): Promise<PairingTarget[]> {
+  const targets: PairingTarget[] = [];
+
+  const cached = Storage.get<PairingTarget>(PORT_CACHE_KEY);
+  if (cached && typeof cached.host === "string" && Number(cached.port) > 0) {
+    pushTarget(targets, { host: cached.host, port: Number(cached.port) });
+  }
 
   log("查找配对服务…");
 
   const record = loadPairing();
   if (record?.altIrk && record.altIrk.length === 16) {
     try {
-      const announced = await discoverPairingPort(record.altIrk);
-      if (announced !== null && !ports.includes(announced)) {
-        debugLog("scan", `Bonjour 公告端口 ${announced}`);
-        ports.push(announced);
+      const announced = await discoverPairingService(record.altIrk);
+      if (announced !== null) {
+        debugLog(
+          "scan",
+          `Bonjour 公告端口 ${announced.port}，地址 ${announced.addresses.join(", ") || "未提供"}`,
+        );
+        // 隧道对端排第一：WiFi 下它一直是对的，不该为了蜂窝把快路径让出去。
+        pushTarget(targets, { host: endpoint.host, port: announced.port });
+        for (const host of announced.addresses) {
+          pushTarget(targets, { host, port: announced.port });
+        }
       }
     } catch (error) {
       debugLog("scan", "Bonjour 发现失败，退回端口扫描", describeError(error));
     }
   }
-  if (ports.length > 0) return ports;
+  if (targets.length > 0) return targets;
 
-  debugLog("scan", `缓存端口 ${cached || "无"}，开始扫 ${PORT_RANGE_START}-${PORT_RANGE_END}`);
+  return (await scanPorts(endpoint, [])).map((port) => ({ host: endpoint.host, port }));
+}
+
+/**
+ * 全段扫描。**不碰 Bonjour，也不看缓存**——这正是它存在的意义。
+ *
+ * 上一版把扫描塞在候选收集的末尾，于是只要 Bonjour 公告了一个端口，
+ * 扫描这条路就永远走不到；而「Bonjour 报的端口连不上」恰恰是最需要扫描的时候。
+ * 真机日志里一行 `[wloc:scan] 扫完…` 都没出现过，就是因为这个。
+ *
+ * @param skip 已经试过、不必再探的端口
+ */
+async function scanPorts(endpoint: TunnelEndpoint, skip: number[]): Promise<number[]> {
+  const ports: number[] = [];
+  debugLog("scan", `开始扫 ${PORT_RANGE_START}-${PORT_RANGE_END}（跳过已试：${skip.join(", ") || "无"}）`);
+  const scanBegan = Date.now();
   for (let base = PORT_RANGE_START; base <= PORT_RANGE_END; base += PORT_SCAN_BATCH) {
     const batch: Promise<number | null>[] = [];
     for (let port = base; port < base + PORT_SCAN_BATCH && port <= PORT_RANGE_END; port++) {
-      if (ports.includes(port)) continue;
+      if (skip.includes(port) || ports.includes(port)) continue;
       batch.push(probeTCP(endpoint.host, port, PORT_SCAN_TIMEOUT).then((open) => (open ? port : null)));
     }
     for (const port of await Promise.all(batch)) {
@@ -215,17 +327,12 @@ async function candidatePorts(endpoint: TunnelEndpoint, log: StatusReporter): Pr
     }
   }
 
-  debugLog("scan", "开放端口", ports.join(", ") || "无");
-  if (ports.length === 0) {
-    throw new Error(
-      `${endpoint.host} 的 ${PORT_RANGE_START}-${PORT_RANGE_END} 没有开放端口。\n\n` +
-        "① 在用蜂窝数据吗？mDNS 在蜂窝接口上找不到配对服务。\n" +
-        "　 确认隧道已连接后，控制中心开关一次飞行模式再回来重试\n" +
-        "② 开发者模式开着吗？\n" +
-        "③ 本机隧道连上了吗？\n" +
-        "④ 刚更新过系统的话，需要回「配对」页重新配一次",
-    );
-  }
+  debugLog(
+    "scan",
+    `${endpoint.host} 扫完 ${PORT_RANGE_END - PORT_RANGE_START + 1} 个端口，` +
+      `耗时 ${Date.now() - scanBegan}ms，开放：${ports.join(", ") || "无"}`,
+  );
+  // 扫空了也只是返回空：调用方可能还有别的地址要扫，这里抛错会把它们挡掉。
   return ports;
 }
 
@@ -233,30 +340,32 @@ interface PairingSession {
   stream: ByteStream;
   client: RemotePairingClient;
   peer: PeerHandshakeInfo;
+  /** 实际握上手的地址——后面建隧道必须跟着它走，不能再用隧道对端。 */
+  host: string;
   port: number;
 }
 
-/** 逐个端口试 RPPairing 握手，握上即认定是配对服务。 */
-async function tryPorts(
-  endpoint: TunnelEndpoint,
-  ports: number[],
+/** 逐个落点试 RPPairing 握手，握上即认定是配对服务。 */
+async function tryTargets(
+  targets: PairingTarget[],
   log: StatusReporter,
 ): Promise<{ session: PairingSession | null; lastError: unknown }> {
   let lastError: unknown = null;
 
-  for (const port of ports) {
+  for (const target of targets) {
+    const { host, port } = target;
     let stream: ByteStream | null = null;
     try {
-      stream = await connectTCP(endpoint.host, port, 4000);
+      stream = await connectTCP(host, port, 4000);
       const client = new RemotePairingClient(new RpPairingSocket(stream));
-      const peer = await withTimeout(client.attemptPairVerify(), 6000, `${port} 端口握手超时`);
+      const peer = await withTimeout(client.attemptPairVerify(), 6000, `${host}:${port} 握手超时`);
       log(`配对服务：${port}`);
-      debugLog("pair", `端口 ${port} 握手成功`, JSON.stringify(peer));
-      Storage.set(PORT_CACHE_KEY, port);
-      return { session: { stream, client, peer, port }, lastError: null };
+      debugLog("pair", `${host}:${port} 握手成功`, JSON.stringify(peer));
+      Storage.set(PORT_CACHE_KEY, target);
+      return { session: { stream, client, peer, host, port }, lastError: null };
     } catch (error) {
       lastError = error;
-      debugLog("pair", `端口 ${port} 不是配对服务`, describeError(error));
+      debugLog("pair", `${host}:${port} 不是配对服务`, describeError(error));
       if (stream) {
         try {
           await stream.close();
@@ -270,36 +379,89 @@ async function tryPorts(
   return { session: null, lastError };
 }
 
-async function openPairingSession(endpoint: TunnelEndpoint, log: StatusReporter): Promise<PairingSession> {
-  const cached = Number(Storage.get<number>(PORT_CACHE_KEY) ?? 0);
+/** 退回扫描时最多扫几个地址——每个都是两秒多，再多就该怀疑别的环节了。 */
+const MAX_SCAN_HOSTS = 3;
 
-  // 第一轮：缓存端口 + Bonjour 公告的端口，都是现成的，快。
-  const first = await candidatePorts(endpoint, log);
-  const firstTry = await tryPorts(endpoint, first, log);
+/**
+ * 回环地址。
+ *
+ * 配对服务确实在这儿监听（2026-10-16 蜂窝实测：127.0.0.1:49152 连得上，是
+ * **读**的时候才 ECONNRESET，说明对面接了连接、读完才砍），但设备不接受本机
+ * 直连——localDevVPN 这层回环隧道存在的全部意义就是让连接看起来像是远程来的。
+ * 所以回环地址只值得试那个公告端口，拿到 ECONNRESET 作为「服务在哪」的证据，
+ * 扫它的全段纯属浪费：扫出来的端口同样连不通，每个还要赔 6 秒握手超时。
+ */
+function isLoopback(host: string): boolean {
+  return host === "::1" || host.startsWith("127.");
+}
+
+async function openPairingSession(endpoint: TunnelEndpoint, log: StatusReporter): Promise<PairingSession> {
+  // 第一轮：缓存落点 + Bonjour 公告（对端地址、公告地址都算），都是现成的，快。
+  const first = await candidateTargets(endpoint, log);
+  const firstTry = await tryTargets(first, log);
   if (firstTry.session) return firstTry.session;
 
   /*
-    缓存的端口连不上，而且这一轮也没拿到别的候选——说明服务换了端口
-    （设备重启、切换网络都会换），而 Bonjour 这次没发现新的。
+    第一轮全军覆没，退回全段扫描。
 
-    以前到这儿就结束了，日志里只留一句「试过 1 个端口都不是 RemotePairing 服务」，
-    而那个端口早就不是配对服务了。现在清掉缓存再走一轮全量扫描，
-    真找不到再判死刑。
+    上一版这里是再收集一次候选、然后把缓存端口过滤掉——可 Bonjour
+    每次都报同一个端口，过滤完就是空数组，扫描于是从来没跑过。真机日志里
+    「Bonjour 公告端口 49152 → ECONNREFUSED → 结束」就是这么来的。
+
+    扫哪些地址同样要紧。2026-10-16 蜂窝实测：公告端口 49152 在 10.7.0.1 上直接
+    ECONNREFUSED，扫这个地址只扫出 50370（上一轮遗留的隧道监听，它等的是
+    TLS-PSK，握手必然超时）——真正的配对服务压根不在这个地址上。所以凡是第一轮
+    见过的地址都要扫一遍，而不是只认隧道对端。
   */
-  if (cached > 0 && first.length === 1 && first[0] === cached) {
-    Storage.remove(PORT_CACHE_KEY);
-    debugLog("scan", `缓存端口 ${cached} 已失效，清掉重新查找`);
-    log("缓存的端口失效了，重新查找…");
+  /*
+    公告地址全是回环，就不必再找了——这本身就是确诊。
 
-    const second = (await candidatePorts(endpoint, log)).filter((port) => port !== cached);
-    if (second.length > 0) {
-      const secondTry = await tryPorts(endpoint, second, log);
-      if (secondTry.session) return secondTry.session;
-      throw new Error(describePairingFailure(endpoint, first.length + second.length, secondTry.lastError));
-    }
+    Bonjour 公告的是服务**实际绑着**的地址。只报 127.0.0.1 和 ::1，说明
+    remotepairingd 这会儿没绑任何网络接口，隧道对端自然 ECONNREFUSED；而回环
+    那条路设备又不接受。两头都堵死，再扫多少端口都是白扫。
+  */
+  const announced = first.filter((target) => target.host !== endpoint.host);
+  if (announced.length > 0 && announced.every((target) => isLoopback(target.host))) {
+    throw new Error(loopbackOnlyFailure(endpoint));
   }
 
-  throw new Error(describePairingFailure(endpoint, first.length, firstTry.lastError));
+  Storage.remove(PORT_CACHE_KEY);
+  log("公告的端口连不上，扫一遍…");
+
+  const hosts: string[] = [];
+  for (const target of first) {
+    if (isLoopback(target.host)) continue;
+    if (!hosts.includes(target.host) && hosts.length < MAX_SCAN_HOSTS) hosts.push(target.host);
+  }
+  if (hosts.length === 0) hosts.push(endpoint.host);
+
+  let tried = first.length;
+  let lastError: unknown = firstTry.lastError;
+  let anyOpen = false;
+
+  for (const host of hosts) {
+    const skip = first.filter((target) => target.host === host).map((target) => target.port);
+    const ports = await scanPorts({ ...endpoint, host }, skip);
+    if (ports.length === 0) continue;
+    anyOpen = true;
+    tried += ports.length;
+    const attempt = await tryTargets(ports.map((port) => ({ host, port })), log);
+    if (attempt.session) return attempt.session;
+    lastError = attempt.lastError;
+  }
+
+  if (!anyOpen) {
+    throw new Error(
+      `${hosts.join("、")} 的 ${PORT_RANGE_START}-${PORT_RANGE_END} 没有开放端口。\n\n` +
+        "① 在用蜂窝数据吗？mDNS 在蜂窝接口上找不到配对服务。\n" +
+        "　 确认隧道已连接后，控制中心开关一次飞行模式再回来重试\n" +
+        "② 开发者模式开着吗？\n" +
+        "③ 本机隧道连上了吗？\n" +
+        "④ 刚更新过系统的话，需要回「配对」页重新配一次",
+    );
+  }
+
+  throw new Error(describePairingFailure(endpoint, tried, lastError));
 }
 
 /**
@@ -312,6 +474,32 @@ async function openPairingSession(endpoint: TunnelEndpoint, log: StatusReporter)
  *   监听，不是路由不通。代理模式下这几乎总是「回环没生效」。
  * - 超时：流量石沉大海，那才是路由或反射规则的问题。
  */
+/**
+ * 公告里只有回环地址时的说明。
+ *
+ * 这是唯一一种「能确诊」的失败：不用猜开发者模式、不用猜配对记录，Bonjour 已经
+ * 把服务绑在哪儿写出来了。2026-10-16 蜂窝实测的完整证据链——
+ *   - 公告地址 = 127.0.0.1 + ::1，没有任何网络接口地址
+ *   - 10.7.0.1:49152 → ECONNREFUSED（连都连不上，没人听）
+ *   - 127.0.0.1:49152 → 读时 ECONNRESET（接了连接才砍，服务确实在）
+ * 所以：服务活着，只是这会儿没绑网络接口，而回环又不被接受。
+ */
+function loopbackOnlyFailure(endpoint: TunnelEndpoint): string {
+  const base =
+    `配对服务这会儿${LOOPBACK_ONLY_MARK}，没绑任何网络接口。\n\n` +
+    "设备不接受从回环直连配对服务，所以这条路走不通——这跟开发者模式、配对记录都没关系。\n\n" +
+    "用蜂窝数据时就是这样。按顺序做一遍：\n" +
+    "① 先确认隧道已连接\n" +
+    "② 控制中心开一次飞行模式，等几秒再关掉\n" +
+    "③ 回来重新开始模拟\n" +
+    "④ 连上之后蜂窝照常用，位置模拟不受影响\n\n";
+  return endpoint.source === "proxyApp"
+    ? base + "代理那边确认 10.7.0.1 的回环改写是生效的；实在不行改连 WiFi。"
+    : base +
+        "也可以把「隧道来源」切到「代理工具提供」试试：代理的回环改写会把目标落回本机，\n" +
+        "跟 Scripting 自身隧道走的不是同一条路。实在不行改连 WiFi。";
+}
+
 function describePairingFailure(endpoint: TunnelEndpoint, tried: number, error: unknown): string {
   const code = (error as { code?: string } | null)?.code ?? "";
   const message = error instanceof Error ? error.message : String(error);
@@ -358,6 +546,40 @@ function describePairingFailure(endpoint: TunnelEndpoint, tried: number, error: 
       (proxy
         ? "代理工具也要确认是在运行的，TUN 断了之后有些工具不会自己重连。"
         : "本机隧道可能也需要重新连一次，去「连接状态」看一眼。")
+    );
+  }
+
+  /*
+    连上了又被砍：服务在那个端口上，只是不接受这条连接。
+
+    回环地址上这是常态（设备要求连接看起来像远程），那种情况已经在
+    openPairingSession 里按「只公告回环」提前确诊了，走到这儿说明是别的地址，
+    值得单独说一句——至少能告诉用户「找到了，但被拒」，而不是「找不到」。
+  */
+  if (code === "ECONNRESET") {
+    return (
+      `${endpoint.host} 上找到了配对服务，但它把连接砍掉了。\n\n` +
+      "设备不接受这条路径上的配对连接。开关一次飞行模式让它重新绑定，再重试。\n" +
+      (proxy ? "也确认一下代理的回环改写有没有把源地址改掉。" : "")
+    );
+  }
+
+  /*
+    握手超时 ≠ 连不上，两者的下一步完全相反。
+
+    TCP 明明连上了、对面却不按 RPPairing 回话，说明那个端口上蹲着别的服务——
+    最常见的是上一轮会话遗留的隧道监听，它等的是 TLS-PSK。2026-10-16 蜂窝实测
+    就是这样：50370 连得上、握手超时，而下面那句「本机隧道可能没真正建立」
+    把人引去查隧道，隧道其实好好的。
+  */
+  if (message.includes("握手超时")) {
+    return (
+      "扫到了开放端口，但没有一个是配对服务。\n\n" +
+      "说明配对服务没在这个地址上监听。用蜂窝数据时常见，按顺序做一遍：\n" +
+      "① 先确认隧道已连接\n" +
+      "② 控制中心开一次飞行模式，等几秒再关掉\n" +
+      "③ 回来重新开始模拟\n\n" +
+      "刚更新过系统的话，去「配对」页重新配一次。"
     );
   }
 
@@ -450,18 +672,30 @@ export async function collectDiagnostics(options: {
   }
 
   log("探测配对端口…");
-  const cached = Number(Storage.get<number>(PORT_CACHE_KEY) ?? 0);
-  let reachablePort = 0;
-  for (const port of cached > 0 ? [cached, PORT_RANGE_START] : [PORT_RANGE_START]) {
-    if (await probeTCP(endpoint.host, port, 1500)) {
-      reachablePort = port;
+  /*
+    只探现成的落点，不跑全段扫描——那要好几秒，诊断页该是秒回的。
+    缓存里存的是上次握成的「地址 + 端口」，蜂窝下它未必是隧道对端。
+  */
+  const cached = Storage.get<PairingTarget>(PORT_CACHE_KEY);
+  const probes: PairingTarget[] = [];
+  if (cached && typeof cached.host === "string" && Number(cached.port) > 0) {
+    pushTarget(probes, { host: cached.host, port: Number(cached.port) });
+  }
+  pushTarget(probes, { host: endpoint.host, port: PORT_RANGE_START });
+
+  let reachable: PairingTarget | null = null;
+  for (const target of probes) {
+    if (await probeTCP(target.host, target.port, 1500)) {
+      reachable = target;
       break;
     }
   }
   items.push({
     label: "配对端口",
-    value: reachablePort > 0 ? `${reachablePort} 可达` : `${endpoint.host} 无响应`,
-    ok: reachablePort > 0,
+    value: reachable
+      ? `${reachable.host}:${reachable.port} 可达`
+      : `${probes.map((target) => `${target.host}:${target.port}`).join("、")} 无响应`,
+    ok: !!reachable,
   });
 
   items.push({
@@ -470,11 +704,11 @@ export async function collectDiagnostics(options: {
     ok: !!options.record,
   });
 
-  if (reachablePort > 0) {
+  if (reachable) {
     log("与设备握手…");
     let stream: ByteStream | null = null;
     try {
-      stream = await connectTCP(endpoint.host, reachablePort, 4000);
+      stream = await connectTCP(reachable.host, reachable.port, 4000);
       const client = new RemotePairingClient(new RpPairingSocket(stream));
       const peer = await withTimeout(client.attemptPairVerify(), 6000, "握手超时");
       items.push({ label: "设备握手", value: "成功", ok: true });
@@ -673,7 +907,18 @@ async function openLocationChannel(
   log(`建立加密隧道（${tunnelPort}）…`);
   let tunnel: VPNRSDTunnel;
   try {
-    tunnel = await openTunnelWithDiagnostics(endpoint, tunnelPort, preSharedKey);
+    /*
+      隧道要连回**握上手的那个地址**，不是设置里的隧道对端。
+
+      设备申请到的监听跟着配对连接走，而配对未必是在 10.7.0.1 上握成的
+      （蜂窝下往往是 Bonjour 公告里的另一个地址）。照旧用 endpoint.host
+      就会把隧道开到一个没人听的地方去。
+    */
+    tunnel = await openTunnelWithDiagnostics(
+      { ...endpoint, host: pairing.host },
+      tunnelPort,
+      preSharedKey,
+    );
   } catch (error) {
     await closeQuietly(() => pairing.stream.close());
     throw error;
@@ -790,7 +1035,8 @@ export async function probeTunnelTls(
     log("申请探测用端口…");
     const port = await withTimeout(session.client.createTcpListener(), 15000, "申请端口超时");
     log(`用端口 ${port} 发 ClientHello…`);
-    const result = await probeTlsPsk(endpoint.host, port);
+    // 跟建隧道一样，要连回握上手的那个地址——监听是挂在这条配对连接上的。
+    const result = await probeTlsPsk(session.host, port);
     debugLog("probe", "探测结果", `${result.outcome}：${result.detail}`);
     return `${result.outcome}：${result.detail}`;
   } finally {

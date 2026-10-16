@@ -77,7 +77,6 @@ function extractFromString(s: string): ParsedCoord | null {
   return null;
 }
 
-declare const fetch: (input: string, init?: any) => Promise<any>;
 
 /**
  * 展开短链接：对疑似短链发 fetch 请求，跟踪 302 重定向后

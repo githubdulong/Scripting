@@ -23,6 +23,7 @@ import { loadSettings } from "../utils/storage";
 import { debugLogText, debugLogCount, clearDebugLog } from "../core/debug";
 import { exportDebugLog } from "../utils/logExport";
 import { openAppSettings } from "../utils/appSettings";
+import { MessageSheet } from "./MessageSheet";
 
 export function DiagnosticsPage() {
   const dismiss = Navigation.useDismiss();
@@ -31,6 +32,8 @@ export function DiagnosticsPage() {
   const [status, setStatus] = useState("");
   // 日志条数会随着后台动作变，进页面时取一次、复制/清空后再刷新就够了。
   const [logCount, setLogCount] = useState(debugLogCount());
+  /** TLS 取证的说明浮层——这步有副作用，要先把后果讲清楚。 */
+  const [showProbeIntro, setShowProbeIntro] = useState(false);
 
   async function run() {
     setBusy(true);
@@ -58,22 +61,19 @@ export function DiagnosticsPage() {
    * 会消费掉一次性的隧道监听，跑完要重新配对握手才能开模拟——所以做成按钮，
    * 而且先问一句。只有排查「隧道建不起来」时才需要它。
    */
-  async function runTlsProbe() {
-    const record = loadPairing();
-    if (!record) {
+  /** 点按钮只负责弹说明；真的跑要等用户在浮层里确认。 */
+  function runTlsProbe() {
+    if (!loadPairing()) {
       setStatus("没有配对记录，无法探测");
       return;
     }
-    const ok = await Dialog.confirm({
-      title: "跑一次 TLS 取证？",
-      message:
-        "会向设备申请一个一次性的隧道监听并把它用掉。\n" +
-        "跑完这次，本次会话要重新配对握手才能开始模拟。\n\n" +
-        "只有在「建立加密隧道失败」时才需要它。",
-      confirmLabel: "开始探测",
-      cancelLabel: "取消",
-    });
-    if (!ok) return;
+    setShowProbeIntro(true);
+  }
+
+  async function confirmTlsProbe() {
+    setShowProbeIntro(false);
+    const record = loadPairing();
+    if (!record) return;
 
     setBusy(true);
     try {
@@ -117,6 +117,23 @@ export function DiagnosticsPage() {
         toolbar={{
           cancellationAction: <Button title="关闭" action={() => dismiss()} />,
           confirmationAction: <Button title={busy ? "检测中…" : "重新检测"} disabled={busy} action={() => void run()} />,
+        }}
+        sheet={{
+          content: (
+            <MessageSheet
+              tone="info"
+              message={
+                "跑一次 TLS 取证？\n" +
+                "会向设备申请一个一次性的隧道监听并把它用掉。\n\n" +
+                "跑完这次，本次会话要重新配对握手才能开始模拟。\n\n" +
+                "只有在「建立加密隧道失败」时才需要它。"
+              }
+              confirm={{ label: "开始探测", onConfirm: () => void confirmTlsProbe() }}
+              onDismiss={() => setShowProbeIntro(false)}
+            />
+          ),
+          isPresented: showProbeIntro,
+          onChanged: setShowProbeIntro,
         }}
       >
         {!!status && (
@@ -206,7 +223,7 @@ export function DiagnosticsPage() {
             title={busy ? "进行中…" : "跑一次 TLS 取证"}
             systemImage="stethoscope.circle"
             disabled={busy}
-            action={() => void runTlsProbe()}
+            action={runTlsProbe}
           />
         </Section>
 

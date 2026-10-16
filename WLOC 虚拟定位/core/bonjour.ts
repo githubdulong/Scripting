@@ -28,14 +28,39 @@ export function pairingTXT(identifier: string, hostAltIRK: Uint8Array): Record<s
   return {name: "Scripting WLOC", identifier, authTag: toBase64(authTag(hostAltIRK, identifier)), model: "Mac17,7", flags: "1", ver: "26", minVer: "17"};
 }
 
+/** 公告里的配对服务：端口，以及设备自己说得通的那几个地址。 */
+export interface PairingAdvertisement {
+  port: number;
+  /** 数值化的 IPv4/IPv6，已去掉带 scope 的链路本地地址。 */
+  addresses: string[];
+}
+
+/**
+ * 取出公告里的数值地址。
+ *
+ * 以前这里只取端口、把地址整个丢掉，连接一律打到隧道对端（10.7.0.1）。
+ * WiFi 下没事，蜂窝下那个地址会被设备回 RST——remotepairingd 没绑到那条回环；
+ * 而同一份公告里往往还带着别的可达地址，只认端口就永远走不到它们。
+ *
+ * 带 scope 的链路本地 IPv6（含 "%"）跳过：连接层按纯地址解析，带 scope 会被拒。
+ */
+function peerAddresses(service: BonjourResolvedService): string[] {
+  const result: string[] = [];
+  for (const entry of service.addresses ?? []) {
+    const ip = entry?.address;
+    if (ip && !ip.includes("%") && !result.includes(ip)) result.push(ip);
+  }
+  return result;
+}
+
 /** Only returns endpoints whose TXT identity authenticates with this device's IRK. */
-export function discoverPairingPort(altIRK: Uint8Array, timeout = 5000): Promise<number | null> {
+export function discoverPairingService(altIRK: Uint8Array, timeout = 5000): Promise<PairingAdvertisement | null> {
   if (altIRK.length !== 16 || typeof Bonjour === "undefined") return Promise.resolve(null);
   return new Promise((resolve) => {
     let ended = false, browser: BonjourBrowser | undefined;
     const active = new Set<string>();
     const timer = setTimeout(() => finish(null), timeout);
-    function finish(port: number | null) { if (ended) return; ended = true; clearTimeout(timer); browser?.stop(); resolve(port); }
+    function finish(found: PairingAdvertisement | null) { if (ended) return; ended = true; clearTimeout(timer); browser?.stop(); resolve(found); }
     try {
       browser = Bonjour.browse({type: "_remotepairing._tcp", includePeerToPeer: true,
         onError: () => finish(null),
@@ -46,7 +71,9 @@ export function discoverPairingPort(altIRK: Uint8Array, timeout = 5000): Promise
             if (ended) return;
             const identifier = fromUtf8(result.txtRecord.identifier ?? utf8(service.name));
             const tagText = result.txtRecord.authTag;
-            if (tagText && equalBytes(fromBase64(fromUtf8(tagText)), authTag(altIRK, identifier))) finish(result.port);
+            if (tagText && equalBytes(fromBase64(fromUtf8(tagText)), authTag(altIRK, identifier))) {
+              finish({ port: result.port, addresses: peerAddresses(result) });
+            }
           }).catch(() => undefined);
         },
       });

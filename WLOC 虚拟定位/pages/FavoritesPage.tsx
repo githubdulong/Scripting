@@ -1,10 +1,20 @@
 // 收藏与历史：收藏可左滑删除，历史自动记录最近选过的点。
 // 参考项目历史管理器的 trailingSwipeActions + Dialog.actionSheet 模式。
 
-import { NavigationStack, List, HStack, VStack, Text, Button, Section, Image, Spacer } from "scripting";
+import {
+  NavigationStack,
+  List,
+  HStack,
+  VStack,
+  Text,
+  Button,
+  Section,
+  Image,
+  Spacer,
+  ContentUnavailableView,
+} from "scripting";
 import type { Coordinate, FavoriteLocation, ActiveLocation } from "../types";
 
-declare const Dialog: any;
 
 interface FavoritesPageProps {
   favorites: FavoriteLocation[];
@@ -61,16 +71,22 @@ export function FavoritesPage({
     <NavigationStack>
       <List navigationTitle="收藏与历史" navigationBarTitleDisplayMode="inline" listStyle="insetGroup">
         {favorites.length === 0 ? (
+          /*
+            空状态交给系统组件，别手搓。
+
+            原先是 Image + 两行 Text 自己叠的，字号、灰阶、间距全是写死的常量——
+            换了动态字号或深色模式就得各自再调一遍。ContentUnavailableView 是
+            系统为这个场景提供的标准件，这些它自己会处理。
+
+            注意**不要**挂到 List 的 overlay 上（官方示例那种写法）：那会盖住整个
+            列表，而这一页没有收藏时下面还有「历史」要显示。
+          */
           <Section>
-            <VStack alignment="center" frame={{ maxWidth: "infinity" }} padding={{ vertical: 48 }}>
-              <Image systemName="star" foregroundStyle="tertiaryLabel" font="title" />
-              <Text foregroundStyle="tertiaryLabel" font="subheadline" padding={{ top: 12 }}>
-                暂无收藏
-              </Text>
-              <Text foregroundStyle="quaternaryLabel" font="caption2" padding={{ top: 4 }}>
-                在地图上选好位置后点击「收藏」
-              </Text>
-            </VStack>
+            <ContentUnavailableView
+              title="暂无收藏"
+              systemImage="star"
+              description="在地图上选好位置后点击「收藏」"
+            />
           </Section>
         ) : (
           <Section

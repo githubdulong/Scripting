@@ -25,6 +25,7 @@ import {
   useRef,
   useState,
   ZStack,
+  Group,
   Rectangle,
   VStack,
   HStack,
@@ -69,6 +70,7 @@ import { AboutPage } from "./pages/AboutPage";
 import { MovementPanel, type MovementSelection } from "./pages/MovementPanel";
 import { JoystickPad } from "./pages/JoystickPad";
 import { CellularGuide, type GuideStage } from "./pages/CellularGuide";
+import { MessageSheet, type MessageAction, type MessageTone } from "./pages/MessageSheet";
 import { applyJitter, fromDeviceCoordinate, parseAndConvert, toDeviceCoordinate } from "./utils/coords";
 import { openAppSettings } from "./utils/appSettings";
 import { loadPairing, type PairingRecord } from "./core/pairing";
@@ -204,7 +206,45 @@ function App() {
     showToast.setValue(true);
   }
 
-  function showErrorAlert(msg: string) {
+  /*
+    提示浮层的附加配置。
+
+    放 ref 不放 state：它总是和 errorMsg 一起设，而 errorMsg 是 observable，
+    setValue 会触发重渲染，那时 ref 已经是新值了，再多一个 state 只是白跑一轮。
+  */
+  const messageOptions = useRef<{
+    tone: MessageTone;
+    action: MessageAction | null;
+    dismissLabel?: string;
+    onDismiss?: () => void;
+  }>({ tone: "warning", action: null });
+
+  /**
+   * 弹半屏提示（`pages/MessageSheet`）。
+   *
+   * 第一行会被当成标题、其余作正文，所以写的时候把结论放第一行、
+   * 详情换行跟在后面，别挤成一整段。
+   *
+   * @param options.tone  中性的说明用 `info`，默认是「没成功」的警示橙
+   * @param options.action 给一颗主按钮，点完自动收起浮层——需要确认才做的事走这里
+   * @param options.onDismiss 点次要按钮时跑。**下拉关闭不会触发它**，
+   *                          所以这里只放「用户明确表示不要」才该做的事。
+   */
+  function showMessage(
+    msg: string,
+    options?: {
+      tone?: MessageTone;
+      action?: MessageAction;
+      dismissLabel?: string;
+      onDismiss?: () => void;
+    },
+  ) {
+    messageOptions.current = {
+      tone: options?.tone ?? "warning",
+      action: options?.action ?? null,
+      dismissLabel: options?.dismissLabel,
+      onDismiss: options?.onDismiss,
+    };
     errorMsg.setValue(msg);
     showError.setValue(true);
   }
@@ -239,25 +279,33 @@ function App() {
     const record = loadRecovery();
     if (!record) return;
 
-    void (async () => {
-      const index = await Dialog.actionSheet({
-        title: "上次的模拟没有正常结束",
-        message:
-          `最后模拟到 ${record.latitude.toFixed(5)}, ${record.longitude.toFixed(5)}。\n` +
-          "设备可能仍保持着这个位置，是否现在连上去恢复真实位置？",
-        actions: [{ label: "暂不处理" }, { label: "恢复真实位置" }],
-        cancelButton: false,
-      });
-      if (index === 1) await handleRestoreRealLocation();
-      else clearRecovery();
-    })();
+    /*
+      走提示浮层而不是系统 actionSheet。
+
+      这是进应用看到的第一件事，而且是个有后果的决定——actionSheet 把说明压成
+      小字顶在列表上方，坐标还得挤在里面。
+
+      「暂不处理」才清记录，**下拉关掉不清**：下拉多半是误触，清掉之后下次
+      启动就不再提醒了，而设备那头可能还保持着假位置。
+    */
+    showMessage(
+      "上次的模拟没有正常结束\n" +
+        `最后模拟到 ${record.latitude.toFixed(5)}, ${record.longitude.toFixed(5)}。\n\n` +
+        "设备可能仍保持着这个位置。现在连上去可以把它恢复成真实定位。",
+      {
+        tone: "info",
+        action: { label: "恢复真实位置", run: () => void handleRestoreRealLocation() },
+        dismissLabel: "暂不处理",
+        onDismiss: clearRecovery,
+      },
+    );
   }, []);
 
   /** 不建立会话，只连上去补发一次停止指令。 */
   async function handleRestoreRealLocation() {
     const record = loadPairing();
     if (!record) {
-      showErrorAlert("请先在「配对」里导入配对记录，才能连上设备恢复");
+      showMessage("请先在「配对」里导入配对记录，才能连上设备恢复");
       return;
     }
 
@@ -276,7 +324,7 @@ function App() {
       fireToast("已恢复真实位置");
     } catch (e) {
       debugLog("ui", "恢复失败", describeError(e));
-      showErrorAlert(`恢复失败：${e instanceof Error ? e.message : String(e)}`);
+      showMessage(`恢复失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSessionState("idle");
       setStatusMsg("");
@@ -465,11 +513,8 @@ function App() {
       handlePick({ latitude: result.latitude, longitude: result.longitude }, result.name);
       fireToast(result.name ? `已定位到：${result.name}` : "已成功定位");
     } catch (e) {
-      await Dialog.alert({
-        title: "解析失败",
-        message: e instanceof Error ? e.message : String(e),
-        buttonLabel: "好",
-      });
+      // 走和其他提示同一个半屏浮层，别再单开一个系统 alert
+      showMessage(`解析失败\n${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -478,7 +523,7 @@ function App() {
       const picked = await Location.pickFromMap();
       if (picked) handlePick({ latitude: picked.latitude, longitude: picked.longitude });
     } catch (e) {
-      showErrorAlert(`选点失败：${e instanceof Error ? e.message : String(e)}`);
+      showMessage(`选点失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -492,7 +537,7 @@ function App() {
         fireToast("已定位到当前位置");
       }
     } catch (e) {
-      showErrorAlert(`定位失败：${e instanceof Error ? e.message : String(e)}`);
+      showMessage(`定位失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -691,16 +736,16 @@ function App() {
     activeLoc.setValue(null);
     saveActiveCache(null);
     void endLiveActivity();
-    showErrorAlert(message);
+    showMessage(message);
   }
 
   async function handleStartSession() {
     if (!pairing) {
-      showErrorAlert("还没有配对。去「配对」页点「配对这台设备」，或导入已有的配对记录");
+      showMessage("还没有配对。去「配对」页点「配对这台设备」，或导入已有的配对记录");
       return;
     }
     if (!coordReady.value) {
-      showErrorAlert("请先在地图上选择目标位置");
+      showMessage("请先在地图上选择目标位置");
       return;
     }
 
@@ -887,13 +932,10 @@ function App() {
           设置页里找。深链跳不到系统设置的任何子页（实测全被重定向到 App 列表），
           但跳本应用这一页是官方支持的，而且开关就在那儿。
         */
-        const go = await Dialog.confirm({
-          title: "实时活动被关掉了",
-          message: "锁屏卡片和灵动岛都不会显示。开关在 Scripting 的设置页里。",
-          confirmLabel: "去打开",
-          cancelLabel: "暂不",
-        });
-        if (go) await openAppSettings();
+        showMessage(
+          "实时活动被关掉了\n锁屏卡片和灵动岛都不会显示。开关在 Scripting 的设置页里。",
+          { tone: "info", action: { label: "去打开", run: () => void openAppSettings() } },
+        );
         return;
       }
       /*
@@ -1063,7 +1105,7 @@ function App() {
     }
 
     if (!pairing) {
-      showErrorAlert("还没有配对。去「配对」页点「配对这台设备」，或导入已有的配对记录");
+      showMessage("还没有配对。去「配对」页点「配对这台设备」，或导入已有的配对记录");
       return null;
     }
 
@@ -1113,7 +1155,13 @@ function App() {
     这个值只用来避免失败得太快时把 CPU 打满。隧道重连上的窗口很短，
     固定节拍很容易整个错过。
   */
-  const GUIDE_RETRY_MS = 500;
+  /*
+    但它也不能压得太狠：真机日志里前三轮重试全撞在
+    「A VPN control operation is already in progress」上——VPN 启动要几秒，
+    500 ms 一轮等于不停打断它，第四轮才赶上空档，白白浪费十秒。
+    VPN 那边现在有互斥兜底，这里也留足间隔，两道一起才稳。
+  */
+  const GUIDE_RETRY_MS = 1500;
 
   function stopGuideLoop() {
     // 轮次号往前推一格：已经发出去的那一轮即便迟到成功，也不会再改状态
@@ -1162,8 +1210,16 @@ function App() {
           这是流程的一部分，不是故障，记一行短的就够；其他错误才值得记全。
         */
         const code = (error as { code?: string } | null)?.code ?? "";
+        const message = error instanceof Error ? error.message : String(error);
         if (code === "ENETUNREACH") {
           debugLog("guide", `第 ${guideAttempts.value} 次：网络不可达（飞行模式开着时正常）`);
+        } else if (message.includes("只绑在回环地址上")) {
+          /*
+            这个状态在用户动手之前不会变，每轮都把那段十几行的操作指引整段记进
+            日志毫无意义——真机日志里 282 条有八成是它刷出来的，真正有用的几行
+            反而要翻半天才找得到。记一行短的，详情看第一次那条。
+          */
+          debugLog("guide", `第 ${guideAttempts.value} 次：配对服务仍只绑回环，等开关飞行模式`);
         } else {
           debugLog("guide", `第 ${guideAttempts.value} 次重试仍失败`, describeError(error));
         }
@@ -1219,7 +1275,7 @@ function App() {
     setSessionState("idle");
     setStatusMsg("");
     if (showError && error) {
-      showErrorAlert(error instanceof Error ? error.message : String(error));
+      showMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -1246,7 +1302,7 @@ function App() {
   /** 以给定坐标序列为路径开始移动（路线、GPX 共用）。 */
   async function startWalking(path: Coordinate[], choice: MovementSelection, label: string) {
     if (path.length < 2) {
-      showErrorAlert("路径至少需要两个点");
+      showMessage("路径至少需要两个点");
       return;
     }
 
@@ -1254,7 +1310,7 @@ function App() {
     try {
       instance = new PathWalker(path, choice.speed.metresPerSecond, choice.lapPlan);
     } catch (e) {
-      showErrorAlert(e instanceof Error ? e.message : String(e));
+      showMessage(e instanceof Error ? e.message : String(e));
       return;
     }
 
@@ -1441,7 +1497,7 @@ function App() {
 
   function handleAddDrawnPoint() {
     if (!coordReady.value) {
-      showErrorAlert("请先在地图上选择位置");
+      showMessage("请先在地图上选择位置");
       return;
     }
     appendDrawnPoint(coordLat.value, coordLng.value);
@@ -1476,7 +1532,7 @@ function App() {
 
   async function handleStartJoystick(choice: MovementSelection) {
     if (!coordReady.value) {
-      showErrorAlert("请先在地图上选择起点");
+      showMessage("请先在地图上选择起点");
       return;
     }
 
@@ -1550,7 +1606,7 @@ function App() {
         const message =
           `停止时出错：${e instanceof Error ? e.message : String(e)}。` +
           "设备可能仍在模拟位置，重新连接后再停一次。";
-        if (!silent) showErrorAlert(message);
+        if (!silent) showMessage(message);
         return message;
       }
     }
@@ -1574,7 +1630,7 @@ function App() {
       void updateLiveActivity({ latitude: lat, longitude: lng });
       fireToast("坐标已更新");
     } catch (e) {
-      showErrorAlert(`更新失败：${e instanceof Error ? e.message : String(e)}`);
+      showMessage(`更新失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -1820,32 +1876,65 @@ function App() {
       sheet={
         sheetKind.value && sheetContent ? { content: sheetContent, isPresented: showSheet } : undefined
       }
-      alert={{
-        title: "提示",
-        message: <Text>{errorMsg.value}</Text>,
-        actions: <Button title="好" action={() => showError.setValue(false)} />,
-        isPresented: showError,
-      }}
       toast={
         toastMsg.value
           ? { message: toastMsg.value, isPresented: showToast, position: "top", duration: 2.5 }
           : undefined
       }
     >
-      <MapPage
-        pendingCoord={pendingCoord}
-        recenterCoord={recenterCoord}
-        coordLat={coordLat}
-        coordLng={coordLng}
-        activeLoc={activeLoc}
-        layer={layer}
-        routes={routes.map((item) => item.coordinates)}
-        selectedRouteIndex={routeIndex}
-        jitterRadius={settings.jitterRadius}
-        drawnPath={drawnPath}
-        onCoordChange={handleCoordChange}
-        onPickUnavailable={() => fireToast("地图还没准备好，稍等一下再点")}
-      />
+      {/*
+        提示浮层挂在这一层，不挂 ZStack。
+
+        一个视图只能带一个 sheet，而 ZStack 那个已经给功能页（设置/收藏/搜索/移动）
+        占着了。Group 是透明容器，不影响 ZStack 的层叠，正好拿来当第二个挂载点。
+      */}
+      <Group
+        sheet={{
+          content: (
+            <MessageSheet
+              message={errorMsg.value}
+              tone={messageOptions.current.tone}
+              confirm={
+                messageOptions.current.action
+                  ? {
+                      label: messageOptions.current.action.label,
+                      onConfirm: () => {
+                        // 先收浮层再做事：动作可能是跳出应用，留着它会压在回来后的界面上
+                        const run = messageOptions.current.action?.run;
+                        showError.setValue(false);
+                        run?.();
+                      },
+                    }
+                  : undefined
+              }
+              dismissLabel={
+                messageOptions.current.dismissLabel ?? (messageOptions.current.action ? "暂不" : undefined)
+              }
+              onDismiss={() => {
+                const bye = messageOptions.current.onDismiss;
+                showError.setValue(false);
+                bye?.();
+              }}
+            />
+          ),
+          isPresented: showError,
+        }}
+      >
+        <MapPage
+          pendingCoord={pendingCoord}
+          recenterCoord={recenterCoord}
+          coordLat={coordLat}
+          coordLng={coordLng}
+          activeLoc={activeLoc}
+          layer={layer}
+          routes={routes.map((item) => item.coordinates)}
+          selectedRouteIndex={routeIndex}
+          jitterRadius={settings.jitterRadius}
+          drawnPath={drawnPath}
+          onCoordChange={handleCoordChange}
+          onPickUnavailable={() => fireToast("地图还没准备好，稍等一下再点")}
+        />
+      </Group>
 
       <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} alignment="leading">
         {/* 关闭键始终在左上角：它是退出，不该跟着惯用手跑来跑去 */}
