@@ -22,6 +22,7 @@ import { loadPairing } from "../core/pairing";
 import { loadSettings } from "../utils/storage";
 import { debugLogText, debugLogCount, clearDebugLog } from "../core/debug";
 import { exportDebugLog } from "../utils/logExport";
+import { openAppSettings } from "../utils/appSettings";
 
 export function DiagnosticsPage() {
   const dismiss = Navigation.useDismiss();
@@ -164,6 +165,30 @@ export function DiagnosticsPage() {
             ))}
           </Section>
         )}
+
+        {/*
+          一键跳到 Scripting 在「设置」里的那一页。
+
+          实时活动、本地网络、通知三个开关都在那儿，而它们被关掉正是
+          「卡片不显示」「找不到设备」最常见的原因。系统设置的深链跳不过去
+          （实测全被重定向到 App 列表），这一跳是 iOS 唯一开放的。
+        */}
+        <Section
+          header={<Text font="caption" foregroundStyle="secondaryLabel">权限与开关</Text>}
+          footer={
+            <Text font="caption2" foregroundStyle="tertiaryLabel">
+              实时活动、本地网络、通知都在那一页。
+              开发者模式不在这儿——它在「设置 → 隐私与安全性 → 开发者模式」，
+              系统不允许应用直接跳过去。
+            </Text>
+          }
+        >
+          <Button
+            title="打开 Scripting 的设置页"
+            systemImage="gear"
+            action={() => void openAppSettings()}
+          />
+        </Section>
 
         <Section
           header={<Text font="caption" foregroundStyle="secondaryLabel">进阶取证</Text>}

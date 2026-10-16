@@ -131,7 +131,7 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
           <NavigationLink
             destination={<SettingsCardStyle current={current} update={update} />}
           >
-            <NavRow title="锁屏与灵动岛" systemImage="platter.filled.top.iphone" />
+            <NavRow title="锁屏与灵动岛" systemImage="platter.filled.top.iphone" chevron={false} />
           </NavigationLink>
         </Section>
 
@@ -157,13 +157,18 @@ export function SettingsPage({ settings, onChange, onDone }: SettingsPageProps) 
             onPick={(id) => update({ tunnelSource: id })}
           />
           <NavigationLink destination={<SettingsConnection current={current} update={update} />}>
-            <NavRow title="连接设置" value={current.deviceHost} systemImage="point.3.connected.trianglepath.dotted" />
+            <NavRow
+              title="连接设置"
+              value={current.deviceHost}
+              systemImage="point.3.connected.trianglepath.dotted"
+              chevron={false}
+            />
           </NavigationLink>
         </Section>
 
         <Section footer={<Text foregroundStyle="tertiaryLabel">改动即时保存，无需额外确认。</Text>}>
           <NavigationLink destination={<SettingsAdvanced current={current} update={update} />}>
-            <NavRow title="高级" systemImage="gearshape.2" />
+            <NavRow title="高级" systemImage="gearshape.2" chevron={false} />
           </NavigationLink>
           <Button action={() => void Navigation.present({ element: <AboutPage /> })}>
             <NavRow title="关于 WLOC 虚拟定位" systemImage="info.circle" />

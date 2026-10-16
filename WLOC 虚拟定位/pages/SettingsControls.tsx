@@ -86,17 +86,25 @@ export function OptionGroup<T extends string>({
   );
 }
 
-/** 导航行：图标 + 标题 + 当前值摘要 + 箭头。右边那个摘要是重点——不点进去也知道现在是什么。 */
+/**
+ * 导航行：图标 + 标题 + 当前值摘要 + 箭头。右边那个摘要是重点——不点进去也知道现在是什么。
+ *
+ * @param chevron 自己画不画箭头。放在 `NavigationLink` 里要传 false——
+ *                它本身就会画一个，两个叠在一起就成了「> >」。
+ *                `Button` 不画，所以那种场景保持默认。
+ */
 export function NavRow({
   title,
   value,
   systemImage,
   tint = "systemBlue",
+  chevron = true,
 }: {
   title: string;
   value?: string;
   systemImage: string;
   tint?: Color;
+  chevron?: boolean;
 }) {
   return (
     <HStack frame={{ maxWidth: "infinity" }} spacing={10}>
@@ -106,7 +114,9 @@ export function NavRow({
       {value ? (
         <Text font="caption" foregroundStyle="secondaryLabel">{value}</Text>
       ) : null}
-      <Image systemName="chevron.right" foregroundStyle="tertiaryLabel" font="caption" />
+      {chevron ? (
+        <Image systemName="chevron.right" foregroundStyle="tertiaryLabel" font="caption" />
+      ) : null}
     </HStack>
   );
 }

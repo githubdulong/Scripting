@@ -70,6 +70,7 @@ import { MovementPanel, type MovementSelection } from "./pages/MovementPanel";
 import { JoystickPad } from "./pages/JoystickPad";
 import { CellularGuide, type GuideStage } from "./pages/CellularGuide";
 import { applyJitter, fromDeviceCoordinate, parseAndConvert, toDeviceCoordinate } from "./utils/coords";
+import { openAppSettings } from "./utils/appSettings";
 import { loadPairing, type PairingRecord } from "./core/pairing";
 import { debugLog, describeError } from "./core/debug";
 import { restoreRealLocation, startLocationSession, type LocationSessionHandle } from "./core/session";
@@ -879,7 +880,20 @@ function App() {
       const allowed = await LiveActivity.areActivitiesEnabled();
       debugLog("liveactivity", `areActivitiesEnabled=${allowed}`);
       if (!allowed) {
-        fireToast("系统里关闭了实时活动，锁屏和灵动岛不会显示");
+        /*
+          直接给跳转，别只扔一句提示。
+
+          开关在「设置 → Scripting → 实时活动」，而用户多半不知道要去应用自己的
+          设置页里找。深链跳不到系统设置的任何子页（实测全被重定向到 App 列表），
+          但跳本应用这一页是官方支持的，而且开关就在那儿。
+        */
+        const go = await Dialog.confirm({
+          title: "实时活动被关掉了",
+          message: "锁屏卡片和灵动岛都不会显示。开关在 Scripting 的设置页里。",
+          confirmLabel: "去打开",
+          cancelLabel: "暂不",
+        });
+        if (go) await openAppSettings();
         return;
       }
       /*
