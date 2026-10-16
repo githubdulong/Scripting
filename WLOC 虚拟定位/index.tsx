@@ -80,7 +80,7 @@ import { defaultSpeed, joystickStep, modeInfo, PathWalker, type WalkState } from
 import { parseGPX } from "./core/gpx";
 import { distanceBetween } from "./core/geo";
 import { delay, withTimeout } from "./core/stream";
-import { DEFAULT_GLOBAL_ENDPOINT } from "./api/searchApi";
+import { DEFAULT_GLOBAL_ENDPOINT, reverseGlobalPlace } from "./api/searchApi";
 import { SimulationLiveActivity, type SimulationState } from "./live_activity";
 
 type SheetKind = "settings" | "favorites" | "search" | "movement" | null;
@@ -105,6 +105,14 @@ const RECONNECT_TRIES = 5;
 /** 会话中报平安、查卡片恢复请求的节拍。app_intents.tsx 按它定「主脚本还在」的判据。 */
 const RESTORE_POLL_MS = 1000;
 
+/**
+ * 这次是作为 Scripting 首页的 Tab 在跑，而不是从脚本列表点开的一次运行。
+ *
+ * 两者的差别不止是入口：Tab 上的实例**常驻**（切走再切回来状态还在），
+ * 没有可以关闭的模态，也不该调 `Script.exit()`。
+ */
+const IS_HOME_TAB = Script.env === "home_screen";
+
 interface PlannedRoute {
   name?: string;
   coordinates: Coordinate[];
@@ -112,7 +120,21 @@ interface PlannedRoute {
   travelTime: number;
 }
 
-function App() {
+export interface AppProps {
+  /**
+   * 分享表单 / 快捷指令传进来的落点，由 `intent.tsx` 解析好后传入。
+   * 不传就是正常启动。
+   */
+  shared?: { latitude: number; longitude: number; name?: string };
+}
+
+/**
+ * 整个界面。
+ *
+ * 导出是给另外两个入口用的：`home_screen_default_ui.tsx`（首页 Tab 直接挂载
+ * 这个组件，不走 `Navigation.present`）和 `intent.tsx`（分享进来时带一个落点）。
+ */
+export function App({ shared }: AppProps = {}) {
   const dismiss = Navigation.useDismiss();
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [favorites, setFavorites] = useState<FavoriteLocation[]>(() => loadFavorites());
@@ -160,6 +182,20 @@ function App() {
   /** 锁屏/灵动岛卡片。脚本被划掉后它仍在，是「忘了恢复」的最后一道提醒。 */
   const liveActivity = useObservable(() => SimulationLiveActivity());
   const [placeName, setPlaceName] = useState("");
+  /*
+    地名另存一份 ref。
+
+    卡片内容要在写入地名之后**立刻**构造（见 applyPlaceName 末尾那次刷新），
+    而 state 更新是异步的——那一刻闭包里拿到的还是上一个值，卡片会被刷成旧地名，
+    看起来就像「刷新了但没生效」。界面渲染照常用 state，只有卡片那条路读 ref。
+  */
+  const placeNameRef = useRef("");
+
+  /** 写地名。两份一起写，别单独调 setPlaceName。 */
+  function updatePlaceName(label: string) {
+    placeNameRef.current = label;
+    setPlaceName(label);
+  }
 
   // 当前选点（来自搜索/链接解析/收藏），供 MapPage 监听并跳转
   const pendingCoord = useObservable<Coordinate | null>(null);
@@ -274,6 +310,18 @@ function App() {
       .catch(() => undefined);
   }, []);
 
+  /*
+    从分享表单带进来的落点。
+
+    解析在 `intent.tsx` 里做完了——那才是分享 / 快捷指令的入口文件，这个
+    组件只负责把结果落到地图上。
+  */
+  useEffect(() => {
+    if (!shared) return;
+    debugLog("intent", `分享落点 ${shared.latitude.toFixed(5)}, ${shared.longitude.toFixed(5)}`);
+    handlePick({ latitude: shared.latitude, longitude: shared.longitude }, shared.name);
+  }, []);
+
   // 上次会话没正常收尾时主动问一句——设备那头可能还保持着模拟位置。
   useEffect(() => {
     const record = loadRecovery();
@@ -382,7 +430,7 @@ function App() {
     coordReady.setValue(true);
     pendingCoord.setValue(coord);
     const label = name?.trim() || "";
-    setPlaceName(label);
+    updatePlaceName(label);
     setHistory(addHistory(label || "地图选点", coord.latitude, coord.longitude));
     closeSheet();
     fireToast("已定位到该坐标");
@@ -395,12 +443,51 @@ function App() {
    * 这里补一次反向地理编码，拼成「街道 · 区」这种能认出来的说法。
    * 查不到就算了，卡片退回显示坐标，不影响模拟。
    */
+  /**
+   * 地名查到了：落缓存、更新界面，必要时把卡片也刷一遍。
+   *
+   * @param source 日志前缀，标明走的哪条路。要写在坐标**前面**——脱敏会把箭头
+   *               之后的地名整段打掉，写在后面连这个标记一起没了。
+   */
+  function applyPlaceName(lat: number, lng: number, label: string, source: string): void {
+    // 空结果也缓存：查不到的点再点一次还是查不到，不该反复请求。
+    placeCache.current.set(`${lat.toFixed(5)},${lng.toFixed(5)}`, label);
+    if (!label) return;
+    // 期间用户可能又点了别处，坐标对不上就丢弃这次结果。
+    if (coordLat.value !== lat || coordLng.value !== lng) return;
+
+    debugLog("geocode", `${source}${lat.toFixed(5)}, ${lng.toFixed(5)} → ${label}`);
+    updatePlaceName(label);
+    setHistory(addHistory(label, lat, lng));
+
+    /*
+      补一次卡片刷新。
+
+      地名是异步回来的，而卡片在「开始模拟」那一刻就建好了——那时多半还没查到，
+      卡片上写的是坐标。定点模拟下坐标不再变化，`pushCoordinate` 不会被调用，
+      卡片就一直停在那个样子。境外更明显：系统反查先失败、再绕一趟 Worker，
+      慢的时候好几秒，卡片早就立住了。
+
+      只在反查的点**正是**当前模拟中的那个点时才刷：用户边模拟边在地图上点别处
+      查看是常事，不该把卡片改成他只是看了一眼的地方。
+    */
+    const active = activeLoc.value;
+    if (
+      session.value &&
+      active &&
+      Math.abs(active.latitude - lat) < 1e-6 &&
+      Math.abs(active.longitude - lng) < 1e-6
+    ) {
+      void updateLiveActivity({ latitude: lat, longitude: lng });
+    }
+  }
+
   async function resolvePlaceName(lat: number, lng: number): Promise<void> {
     // 查过的点直接用缓存。反查有频率限制，来回点同几个位置时不该重复请求。
     const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
     const cached = placeCache.current.get(key);
     if (cached !== undefined) {
-      if (cached) setPlaceName(cached);
+      if (cached) updatePlaceName(cached);
       return;
     }
 
@@ -435,18 +522,29 @@ function App() {
         [mark.thoroughfare, mark.subLocality].filter(Boolean).join(" ") ||
         mark.locality ||
         "";
-      if (!label) return;
-
-      placeCache.current.set(key, label);
-      // 期间用户可能又点了别处，坐标对不上就丢弃这次结果。
-      if (coordLat.value !== lat || coordLng.value !== lng) return;
-      debugLog("geocode", `${lat.toFixed(5)}, ${lng.toFixed(5)} → ${label}`);
-      setPlaceName(label);
-      setHistory(addHistory(label, lat, lng));
+      applyPlaceName(lat, lng, label, "");
     } catch (error) {
-      // 查不到不影响模拟，卡片退回显示坐标即可。记一笔免得对同一个点反复请求。
-      placeCache.current.set(key, "");
-      debugLog("geocode", `${key} 查不到地名（隧道开着时偶发，多数地点正常）`, describeError(error));
+      debugLog("geocode", `${key} 系统反查失败，试 Worker`, describeError(error));
+      /*
+        退回 Worker → Nominatim。
+
+        大陆设备的系统地理编码走高德，境外基本没有覆盖——定位到首尔只会
+        kCLErrorDomain 8（没有结果），卡片上就剩一串坐标。搜索那边早有这条路
+        （「全球」模式），反查一直缺。
+
+        仍然失败就记空，免得对同一个点反复请求；显示坐标不影响模拟。
+      */
+      try {
+        const label = await reverseGlobalPlace(
+          wgs.latitude,
+          wgs.longitude,
+          settings.globalSearchEndpoint.trim() || DEFAULT_GLOBAL_ENDPOINT,
+        );
+        applyPlaceName(lat, lng, label, "Worker 反查 ");
+      } catch (fallbackError) {
+        placeCache.current.set(key, "");
+        debugLog("geocode", `${key} Worker 反查也失败`, describeError(fallbackError));
+      }
     }
   }
 
@@ -456,11 +554,11 @@ function App() {
     coordReady.setValue(true);
     if (name !== undefined) {
       // 点中 POI 时 MapKit 直接给名称，比反查的结果准，优先用。
-      setPlaceName(name);
+      updatePlaceName(name);
       setHistory(addHistory(name || "地图选点", lat, lng));
     } else {
       // 点的是空地：先清掉上一个点的名字，再去反查，免得卡片上挂着旧地名。
-      setPlaceName("");
+      updatePlaceName("");
       void resolvePlaceName(lat, lng);
     }
     // 手绘模式下点地图就是落点，不用为了加一个点去开合一次面板。
@@ -851,7 +949,8 @@ function App() {
   function cardTitle(conf: AppSettings): string {
     switch (conf.cardTitle) {
       case "place":
-        return placeName;
+        // 读 ref 不读 state：反查回来会立刻刷一次卡片，那时 state 还没更新
+        return placeNameRef.current;
       case "coord":
         return "";
       case "custom":
@@ -896,8 +995,9 @@ function App() {
       case "status":
         return movementKind === "none" ? "模拟中" : walk?.paused ? "已暂停" : "移动中";
       case "place":
-        // 地名放得下就用地名，放不下系统会按 minScaleFactor 缩，仍比坐标好认
-        return placeName || shortCoord;
+        // 地名放得下就用地名，放不下系统会按 minScaleFactor 缩，仍比坐标好认。
+        // 同 cardTitle，读 ref 以拿到刚反查回来的那个值。
+        return placeNameRef.current || shortCoord;
       case "coordinate":
         return shortCoord;
       case "speed":
@@ -1939,7 +2039,11 @@ function App() {
       <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} alignment="leading">
         {/* 关闭键始终在左上角：它是退出，不该跟着惯用手跑来跑去 */}
         <HStack alignment="top" spacing={8} padding={{ top: 12, leading: 16, trailing: 16 }}>
-          {topBtn("xmark", "systemRed", handleCloseApp)}
+          {/*
+            首页 Tab 里没有「关闭」这回事：界面是常驻的，`dismiss()` 没有模态
+            可关，按了什么也不会发生。少画一个按钮，也给菜单腾出位置。
+          */}
+          {IS_HOME_TAB ? null : topBtn("xmark", "systemRed", handleCloseApp)}
           {atBottom ? <Spacer /> : menuCluster}
         </HStack>
         <Spacer />
@@ -2287,4 +2391,16 @@ const run = async () => {
   Script.exit();
 };
 
-run();
+/*
+  **只有从脚本列表直接运行时才自己呈现。**
+
+  另外两个入口文件（`home_screen_default_ui.tsx`、`intent.tsx`）都要 import
+  这个文件来拿 App，而 import 会把顶层代码整个求值一遍。它们各自已经把界面
+  挂上或呈现了，这里再 present 一次就是平白多一层全屏模态；更要命的是后面
+  那句 `Script.exit()`——它会终止整个实例，把那两个入口刚建立的东西一起带走
+  （首页 Tab 上会只剩一个不再响应的界面，得手动 Reload 才能救回来）。
+
+  所以这里按 env 精确判断，不要写成「非某某环境」——将来再多一个入口，
+  那种写法会默默地又把这段跑起来。
+*/
+if (Script.env === "index") run();

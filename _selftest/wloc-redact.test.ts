@@ -125,5 +125,24 @@ console.log("\n[Bonjour 公告与扫描]");
   );
 }
 
+/*
+  境外反查走 Worker（系统地理编码在大陆设备上没有境外覆盖）。
+  地名照样要打码，但「Worker」这个标记得留着——否则看日志分不清走的哪条路，
+  而这正是排查「为什么还是只显示坐标」的第一个问题。
+*/
+console.log("\n[Worker 反查]");
+{
+  const line = redactLog("[wloc:geocode] Worker 反查 37.59308, 126.98372 → 示例路");
+  check("反查到的地名被打码", !line.includes("示例路"));
+  check("Worker 标记保留", line.includes("Worker 反查"));
+  // 降精度是四舍五入不是截断：37.59308 → 37.6…
+  check("坐标降精度后仍在", line.includes("37.6…") && line.includes("127.0…"));
+
+  check(
+    "系统反查失败那行不漏坐标",
+    !redactLog("[wloc:geocode] 37.59308,126.98372 系统反查失败，试 Worker").includes("37.59308"),
+  );
+}
+
 console.log(`\n通过 ${passed} 项，失败 ${failed} 项`);
 if (failed > 0) process.exit(1);

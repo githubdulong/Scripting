@@ -83,6 +83,50 @@ export async function translateForSearch(query: string): Promise<{ text: string;
 }
 
 /**
+ * 由搜索地址推出反查地址。
+ *
+ * 两个端点在同一个 Worker 上，只差最后一段。设置项里存的一直是搜索地址
+ * （历史原因，那时还没有反查），所以这里换一下而不是再加一个设置——
+ * 多一个要填的地址，等于多一个填错的机会。
+ */
+function reverseEndpointFrom(searchEndpoint: string): string {
+  const trimmed = searchEndpoint.trim().replace(/\/+$/, "");
+  return /\/search$/.test(trimmed) ? trimmed.replace(/\/search$/, "/reverse") : `${trimmed}/reverse`;
+}
+
+/**
+ * 境外坐标反查地名。
+ *
+ * 系统的 `Location.reverseGeocode` 在大陆设备上走高德数据，境外基本没有覆盖——
+ * 定位到首尔，卡片上只能显示一串坐标。搜索那边早就有 Worker → Nominatim 这条路，
+ * 反查一直缺，这里补上。
+ *
+ * **只在系统反查失败后调用。** 境内系统的结果更准也更快（门牌号级别），
+ * 没必要为了统一而全都绕出去。
+ *
+ * @param latitude  设备坐标系（WGS-84）
+ * @returns 地名；查不到返回空串，调用方退回显示坐标
+ */
+export async function reverseGlobalPlace(
+  latitude: number,
+  longitude: number,
+  endpoint = DEFAULT_GLOBAL_ENDPOINT,
+): Promise<string> {
+  if (!endpoint.startsWith("http")) return "";
+  const url =
+    `${reverseEndpointFrom(endpoint)}?lat=${encodeURIComponent(latitude)}` +
+    `&lon=${encodeURIComponent(longitude)}`;
+
+  const response = await fetch(url, { method: "GET", timeout: 10 } as any);
+  if (!response.ok) return "";
+
+  const body = (await response.json()) as { name?: string; detail?: string };
+  // name 是「路名 / POI」那一级；detail 是整串地址，太长不适合放卡片，
+  // 取第一段当兜底就够了。
+  return (body.name ?? "").trim() || (body.detail ?? "").split(",")[0].trim();
+}
+
+/**
  * 境外搜索。
  *
  * Nominatim 给的是 WGS-84，而应用内统一按地图系存放，所以要先转一道——

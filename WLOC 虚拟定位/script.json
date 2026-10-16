@@ -23,7 +23,7 @@
     "es": "",
     "it": ""
   },
-  "version": "2.5.1",
+  "version": "2.6.0",
   "author": {
     "name": "ios151",
     "email": null,
@@ -52,6 +52,6 @@
     "localDevVPN",
     "location"
   ],
-  "intentInputTypes": [],
+  "intentInputTypes": ["URLs", "Text"],
   "runInApp": true
 }
