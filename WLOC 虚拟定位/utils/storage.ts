@@ -2,7 +2,23 @@
 // 封装收藏位置、应用设置、当前生效坐标缓存三类数据。
 
 import type { AppSettings, FavoriteLocation, ActiveLocation, SessionRecovery } from "../types";
-import { DEFAULT_SETTINGS, STORAGE_KEYS } from "../constants";
+import { DEFAULT_DEVICE_HOST, DEFAULT_SETTINGS, STORAGE_KEYS } from "../constants";
+import type { TunnelEndpoint } from "../core/session";
+
+/**
+ * 从设置里取出要连的那个端点。
+ *
+ * 全仓库原先有 7 处各自写 `{ host: settings.deviceHost, source: settings.tunnelSource }`,
+ * 没有一处做清洗——用户在输入框里多打一个空格、或者手滑清空，拿到的就是
+ * `" 10.7.0.1 "` 或者空串，然后一路传到 `connectTCP` 去连一个根本不存在的主机，
+ * 报出来的是「无响应」，看不出是地址本身错了。
+ *
+ * 清洗和回退都收在这里，调用方只管要端点。
+ */
+export function endpointFromSettings(settings: AppSettings): TunnelEndpoint {
+  const host = settings.deviceHost.trim();
+  return { host: host || DEFAULT_DEVICE_HOST, source: settings.tunnelSource };
+}
 
 // ── 收藏位置 ───────────────────────────────────────────────────────
 

@@ -43,7 +43,7 @@ import {
 import { createHostIdentity, createPIN, pairThisDevice } from "../core/pair_setup";
 import { SimulationLiveActivity, type SimulationState } from "../live_activity";
 import { verifyPairingRecord } from "../core/session";
-import { loadSettings } from "../utils/storage";
+import { endpointFromSettings, loadSettings } from "../utils/storage";
 
 export function PairingPage() {
   const dismiss = Navigation.useDismiss();
@@ -125,9 +125,16 @@ export function PairingPage() {
       // 把 PIN 挂到灵动岛上：输码要切到「设置」，那时本页已经看不见了。
       // 起不来不影响配对，只是得自己记住六位数。
       try {
-        // 同 index.tsx 的 startLiveActivity，两条都要：清场是因为卡片活得比脚本久，
-        // 换新实例是因为一个实例的 start() 只许调一次（再配一次就起不来了）。
-        await LiveActivity.endAllActivities({ dismissTimeInterval: 0 }).catch(() => undefined);
+        /*
+          **不要 endAllActivities**。
+
+          这一句原本是照抄 index.tsx 的 startLiveActivity，那边清场是为了收掉
+          上一轮脚本留下的残卡。但配对可以在模拟进行中发起（比如系统更新后
+          重新配对），而这一句会把正在提醒用户「位置模拟中」的那张卡片一起收掉，
+          模拟还在跑、卡片却没了——比没有卡片更糟。
+
+          换新实例仍然要：一个实例的 start() 只许调一次，再配一次就起不来了。
+        */
         pinActivity.setValue(SimulationLiveActivity());
         await pinActivity.value.start(pairingCardState(code));
       } catch (error) {
@@ -148,7 +155,7 @@ export function PairingPage() {
       const current = loadSettings();
       await verifyPairingRecord(
         record,
-        { host: current.deviceHost, source: current.tunnelSource },
+        endpointFromSettings(current),
         setStatus,
       );
 

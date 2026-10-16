@@ -19,7 +19,7 @@ import {
 } from "scripting";
 import { collectDiagnostics, probeTunnelTls, type DiagnosticItem } from "../core/session";
 import { loadPairing } from "../core/pairing";
-import { loadActiveCache, loadSettings } from "../utils/storage";
+import { endpointFromSettings, loadActiveCache, loadSettings } from "../utils/storage";
 import { debugLogText, debugLogCount, clearDebugLog } from "../core/debug";
 import { exportDebugLog } from "../utils/logExport";
 import { openAppSettings } from "../utils/appSettings";
@@ -41,7 +41,7 @@ export function DiagnosticsPage() {
     try {
       const settings = loadSettings();
       const result = await collectDiagnostics({
-        endpoint: { host: settings.deviceHost, source: settings.tunnelSource },
+        endpoint: endpointFromSettings(settings),
         record: loadPairing(),
         // 生效坐标缓存有值 = 这会儿正模拟着。诊断页是独立呈现的，拿不到
         // App 里那个 session 句柄，只能从缓存看。
@@ -83,7 +83,7 @@ export function DiagnosticsPage() {
       const settings = loadSettings();
       const detail = await probeTunnelTls(
         record,
-        { host: settings.deviceHost, source: settings.tunnelSource },
+        endpointFromSettings(settings),
         setStatus,
       );
       setStatus(`TLS 探测：${detail}`);

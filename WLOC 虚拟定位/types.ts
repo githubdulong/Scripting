@@ -114,6 +114,18 @@ export interface AppSettings {
 }
 
 /** 地图链接解析结果 */
+/**
+ * 待跳转的目标点。
+ *
+ * `name` 有值（含空串）表示**来源已经知道地名**（搜索、收藏、链接解析、
+ * 点中 POI），不必再反查；`undefined` 才去反查。这个区别很要紧：以前跳转
+ * 一律不带名字，`MapPage` 回调时就把刚设好的地名清掉又反查一遍，搜到的
+ * 「杭州大剧院」转眼变成一个街道名。
+ */
+export interface PickTarget extends Coordinate {
+  name?: string;
+}
+
 export interface ParsedCoord {
   latitude: number;
   longitude: number;

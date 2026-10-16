@@ -20,13 +20,13 @@ import {
   type MapProxy,
   type Point,
 } from "scripting";
-import type { Coordinate, ActiveLocation, MapLayerId } from "../types";
+import type { Coordinate, ActiveLocation, MapLayerId, PickTarget } from "../types";
 import { DEFAULT_SPAN } from "../constants";
 import { loadActiveCache } from "../utils/storage";
 import { fromDeviceCoordinate } from "../utils/coords";
 
 interface MapPageProps {
-  pendingCoord: Observable<Coordinate | null>;
+  pendingCoord: Observable<PickTarget | null>;
   /** 居中到这个点：只改中心、保留缩放、不动选中点。 */
   recenterCoord: Observable<Coordinate | null>;
   coordLat: Observable<number>;
@@ -117,10 +117,11 @@ export function MapPage({
   // 拖动地图只换视野，不改选中点——选中的是你点下的那个位置，图钉留在原地。
   // 外部跳转（搜索/收藏/链接解析）— 使用 subscribe 保证可靠监听
   useEffect(() => {
-    const cb = (target: Coordinate | null) => {
+    const cb = (target: PickTarget | null) => {
       if (target) {
         moveCameraTo(target.latitude, target.longitude);
-        onCoordChange(target.latitude, target.longitude);
+        // 把名字原样带回去：来源知道地名时就别再反查一遍（会把它覆盖掉）。
+        onCoordChange(target.latitude, target.longitude, target.name);
         pendingCoord.setValue(null);
       }
     };

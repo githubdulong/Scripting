@@ -21,7 +21,7 @@ import { AppIntentManager, AppIntentProtocol, LiveActivity, Notification } from 
 import { loadPairing } from "./core/pairing";
 import { restoreRealLocation } from "./core/session";
 import { debugLog, describeError } from "./core/debug";
-import { clearRecovery, loadSessionID, loadSettings } from "./utils/storage";
+import { clearRecovery, endpointFromSettings, loadSessionID, loadSettings } from "./utils/storage";
 
 /**
  * 主脚本处理完恢复请求后回的东西。
@@ -159,7 +159,7 @@ async function restoreDirectly(): Promise<string | null> {
   try {
     await restoreRealLocation({
       record,
-      endpoint: { host: settings.deviceHost, source: settings.tunnelSource },
+      endpoint: endpointFromSettings(settings),
     });
     // 停止指令送到了，上次会话的未收尾记录可以清掉。
     clearRecovery();

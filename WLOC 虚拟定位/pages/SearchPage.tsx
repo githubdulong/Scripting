@@ -16,10 +16,14 @@ import {
   Image,
   Toggle,
   useState,
+  useRef,
   Navigation,
 } from "scripting";
 import { searchGlobalPlaces, searchPlaces, translateForSearch, type SearchResult } from "../api/searchApi";
 import type { Coordinate } from "../types";
+
+/** 边打边搜的防抖间隔。太短等于没防，太长打完还要等。 */
+const SEARCH_DEBOUNCE_MS = 300;
 
 interface SearchPageProps {
   globalEndpoint: string;
@@ -63,10 +67,29 @@ export function SearchPage({ globalEndpoint, onPick }: SearchPageProps) {
     }
   }
 
+  /*
+    边打边搜要防抖，而且要丢掉迟到的结果。
+
+    以前每敲一个字就发一次请求：打「上海虹桥」会发四次，而它们的返回顺序
+    并不保证——「上」的结果晚于「上海虹桥」回来的话，列表就被最短的那次
+    覆盖了。两件事一起解决：输入停下 300 毫秒才发，并且只认最后一次的轮次号。
+  */
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRun = useRef(0);
+
   function handleChanged(text: string) {
     setQuery(text);
     // 全球模式交给「搜索」按钮，省请求。
-    if (!global) void runSearch(text, false);
+    if (global) return;
+
+    if (searchTimer.current !== null) clearTimeout(searchTimer.current);
+    const run = ++searchRun.current;
+    searchTimer.current = setTimeout(() => {
+      searchTimer.current = null;
+      // 这一轮在等待期间已经被新输入取代，就别发了。
+      if (run !== searchRun.current) return;
+      void runSearch(text, false);
+    }, SEARCH_DEBOUNCE_MS);
   }
 
   function handleToggleGlobal(value: boolean) {

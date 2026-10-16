@@ -32,6 +32,50 @@ function extractFromString(s: string): ParsedCoord | null {
   const str = String(s);
   let m: RegExpMatchArray | null;
 
+  /*
+    先认百度，因为它的参数名（`location=` / `latlng=`）会被后面那条通用规则
+    抢走，而两者的坐标系差着约 500 米。
+
+    判据是域名：只有确实来自 `map.baidu.com` / `api.map.baidu.com` 的链接才
+    按 BD-09 处理——别处的 `location=` 参数不是百度坐标。
+    百度这两个参数都是「纬度,经度」顺序。
+  */
+  if (/(?:^|\/\/|\.)(?:api\.)?map\.baidu\.com/i.test(str)) {
+    m = str.match(/(?:location|latlng)=(-?\d{1,3}\.\d+)(?:,|%2C)(-?\d{1,3}\.\d+)/i);
+    if (m) {
+      const nm = str.match(/[?&](?:title|name)=([^&]+)/i);
+      return {
+        latitude: +m[1],
+        longitude: +m[2],
+        name: nm ? safeDecode(nm[1]) : "",
+        src: "baidu",
+      };
+    }
+  }
+
+  /*
+    链接自己声明了坐标系就照它说的办。
+
+    高德、腾讯的部分接口支持 `coord_type=wgs84`、`datum=wgs84` 这类参数，
+    带上了就说明给的是真实坐标，不换算会偏几百米。
+  */
+  if (/(?:datum|coord_?type|coordsys)=wgs ?-?84/i.test(str)) {
+    // 有 `coord_type=wgs84` 这种强信号，小数位要求可以放到 3 位（约 100 米精度，
+    // 真实链接的下限），但不能更松，否则会匹配上版本号一类的数字对。
+    m = str.match(/(-?\d{1,3}\.\d{3,})(?:,|%2C)(-?\d{1,3}\.\d{3,})/);
+    if (m) {
+      const a = +m[1];
+      const b = +m[2];
+      // 纬度不可能超过 90，据此判顺序
+      const flipped = Math.abs(a) > 90 && Math.abs(b) <= 90;
+      return {
+        latitude: flipped ? b : a,
+        longitude: flipped ? a : b,
+        src: "wgs84",
+      };
+    }
+  }
+
   // 苹果地图 coordinate=/ll=/sll=纬度,经度
   m = str.match(/(?:coordinate|ll|sll)=(-?\d{1,3}\.\d+)(?:,|%2C)(-?\d{1,3}\.\d+)/i);
   if (m) {
@@ -190,9 +234,60 @@ function gcj02ToWgs84(lat: number, lon: number): { latitude: number; longitude: 
  * 原样留着才能落在地图上的正确位置；下发给设备时由 toDeviceCoordinate 统一转回。
  * 内部调用 parseCoordsAsync，支持短链 302 重定向展开。
  */
+/** 经纬度在不在合法值域内。解析出来的东西一律先过这一关。 */
+function inRange(lat: number, lon: number): boolean {
+  return (
+    Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180
+  );
+}
+
+/**
+ * BD-09（百度坐标系）→ GCJ-02。
+ *
+ * 百度在 GCJ-02 之上又加了一层自己的偏移，不换算差约 500 米。注释和界面提示
+ * 一直写着支持百度链接，实际上**从来没有这段换算**——解析出来的 BD-09 被当成
+ * 地图系直接用了。
+ */
+function bd09ToGcj02(lat: number, lon: number): { latitude: number; longitude: number } {
+  const X_PI = (Math.PI * 3000) / 180;
+  const x = lon - 0.0065;
+  const y = lat - 0.006;
+  const z = Math.sqrt(x * x + y * y) - 0.00002 * Math.sin(y * X_PI);
+  const theta = Math.atan2(y, x) - 0.000003 * Math.cos(x * X_PI);
+  return { latitude: z * Math.sin(theta), longitude: z * Math.cos(theta) };
+}
+
 export async function parseAndConvert(raw: string): Promise<ParsedCoord> {
   const hit = await parseCoordsAsync(raw);
-  return { ...hit, latitude: round6(hit.latitude), longitude: round6(hit.longitude) };
+  if (!inRange(hit.latitude, hit.longitude)) {
+    throw new Error(
+      `解析出的坐标超出合法范围（${hit.latitude}, ${hit.longitude}）。换个链接或直接填经纬度试试。`,
+    );
+  }
+
+  /*
+    统一成应用内的地图系（大陆为 GCJ-02）再交出去。
+
+    - `baidu`：BD-09，必须换算，否则差约 500 米。
+    - `wgs84`：链接里明确标了 `datum=wgs84` / `coord=wgs84` 之类，按真实坐标
+      换进地图系。
+    - `apple` / `amap`：本来就是 GCJ-02，原样。
+    - `google` / `text`：**无从判断**。Google 在大陆显示 GCJ-02、国际版是
+      WGS-84，而 `@lat,lng` 这种写法两家都在用；纯文本更是什么都可能。
+      维持「当作地图系」的旧行为——猜错了至少和以前一致，不会突然把老用户
+      常用的链接挪到别处去。
+  */
+  let { latitude, longitude } = hit;
+  if (hit.src === "baidu") {
+    ({ latitude, longitude } = bd09ToGcj02(latitude, longitude));
+  } else if (hit.src === "wgs84") {
+    ({ latitude, longitude } = wgs84ToGcj02(latitude, longitude));
+  }
+
+  if (!inRange(latitude, longitude)) {
+    throw new Error("坐标换算后超出合法范围，这个链接的坐标系可能不是预期的那种。");
+  }
+  return { ...hit, latitude: round6(latitude), longitude: round6(longitude) };
 }
 
 // ── 应用内坐标系 ↔ 设备坐标系 ────────────────────────────────────

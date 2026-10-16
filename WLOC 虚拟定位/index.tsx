@@ -42,7 +42,7 @@ import {
   type ScriptingApi,
 } from "scripting";
 // Animation 与 withAnimation 是全局声明，不从 "scripting" 导出，直接用即可。
-import type { ActiveLocation, AppSettings, Coordinate, FavoriteLocation, MapLayerId, SessionState } from "./types";
+import type { ActiveLocation, AppSettings, Coordinate, FavoriteLocation, MapLayerId, PickTarget, SessionState } from "./types";
 import {
   loadFavorites,
   addFavorite,
@@ -57,6 +57,7 @@ import {
   loadRecovery,
   saveRecovery,
   clearRecovery,
+  endpointFromSettings,
   saveSessionID,
   clearSessionID,
 } from "./utils/storage";
@@ -93,6 +94,25 @@ interface MenuEntry {
 
 /** 移动模拟的推进间隔。与 wloc（iOS）一致，太密会让 DTX 队列排不过来。 */
 const MOVEMENT_TICK_MS = 500;
+/*
+  一拍最多按这么长算。
+
+  `setInterval` 在系统忙或 App 被挂起时会延迟、甚至把多拍合并成一次（dts 写明
+  了这一点），所以不能一律按 500 ms 推进——那样算出来的速度永远偏低，锁屏一会儿
+  再回来，走过的距离比该走的少一大截。改成按**实际经过的时间**推进。
+
+  但也不能无限补：挂起十分钟再回来，一次补完十分钟的距离等于瞬移。2 秒是
+  上限，超出的部分直接丢掉。
+*/
+const MOVEMENT_MAX_STEP_S = 2;
+/*
+  恢复记录最多多久刷一次。
+
+  它要记的是「最后模拟到哪」，所以得跟着下发走；但移动时每 0.5 秒下发一次，
+  每次都写一遍 Storage 没必要。5 秒的粒度足够——真崩在中途，位置差几米
+  不影响用户判断要不要恢复。
+*/
+const RECOVERY_SAVE_MS = 5000;
 /*
   断线重连的节奏。
   关掉飞行模式后网络要几秒才稳，2 秒一次、试 5 次≈10 秒，足够跨过切换期；
@@ -212,7 +232,15 @@ export function App({ shared }: AppProps = {}) {
   /** 同上：落点要基于最新的点列，不能用闭包里那份快照。 */
   const drawnRef = useRef<Coordinate[]>([]);
   /** 正在自动重连，挡住重连过程中再次触发的掉线回调。 */
-  const reconnecting = useRef(false);
+  /** 正在重连。observable 而非 ref——底部卡片要据此显示「取消」按钮。 */
+  const reconnecting = useObservable(false);
+  /** 本次会话的开始时间（ISO）。刷新恢复记录时要保留它，不能每次都改成当前时刻。 */
+  const recoveryStartedAt = useRef("");
+  /** 上次刷新恢复记录的时刻，配合 RECOVERY_SAVE_MS 节流。 */
+  const recoverySavedAt = useRef(0);
+
+  /** 用户在重连期间按了「取消」。下一轮开始前会看它。 */
+  const reconnectCancelled = useRef(false);
   /** 反查过的地名。空串表示查过但没有结果，避免对同一个点反复请求。 */
   const placeCache = useRef(new Map<string, string>());
   const walker = useObservable<PathWalker | null>(null);
@@ -240,7 +268,7 @@ export function App({ shared }: AppProps = {}) {
   }
 
   // 当前选点（来自搜索/链接解析/收藏），供 MapPage 监听并跳转
-  const pendingCoord = useObservable<Coordinate | null>(null);
+  const pendingCoord = useObservable<PickTarget | null>(null);
   /*
     蜂窝数据引导的状态。
     guideStart/guideError 用 ref：它们只在回调里读写，进渲染只会多出无谓的重绘。
@@ -376,6 +404,38 @@ export function App({ shared }: AppProps = {}) {
     // 代理模式下不需要 Scripting 自己的 VPN，名额本来就让出去了。
     if (settingsRef.current.tunnelSource === "builtIn" && !list.includes("vpn")) return "vpn";
     return null;
+  }
+
+  /**
+   * 这个失败该不该弹蜂窝引导。
+   *
+   * 引导讲的是一件很具体的事：**找不到配对服务**，去开关一次飞行模式。只有
+   * 「连不上那个端口」这一类错误才对得上。
+   *
+   * 以前建会话失败一律弹它，于是 pair-verify 被拒（系统更新后配对授权失效，
+   * 该做的是重新配对）、权限被拒、隧道握手失败，统统显示成「连不上这台设备」
+   * 外加一段讲蜂窝 mDNS 的说明——方向完全是错的。原生版也只把「隧道未就绪」
+   * 那一类送进引导。
+   */
+  function shouldOfferGuide(error: unknown): boolean {
+    const code = (error as { code?: string } | null)?.code ?? "";
+    if (code === "ECONNREFUSED" || code === "ENETUNREACH" || code === "EHOSTUNREACH") return true;
+
+    const message = error instanceof Error ? error.message : String(error);
+    // 这几句都出自 describePairingFailure / loopbackOnlyFailure，说的都是
+    // 「没找到能握手的配对服务」。
+    if (message.includes("只绑在回环地址上")) return true;
+    if (message.includes("没有开放端口")) return true;
+    if (message.includes("拒绝了连接")) return true;
+    if (message.includes("这条路由不存在")) return true;
+    if (message.includes("没有响应")) return true;
+    /*
+      握手超时也算：连上了端口、对面不按 RPPairing 回话，和「找不到服务」
+      是同一类处境。但**建隧道超时**不算——那时配对早就成功了，开关飞行
+      模式解决不了，所以这里只认前者。
+    */
+    if (message.includes("握手超时")) return true;
+    return false;
   }
 
   /** 权限被拒时的说明。两个入口共用。 */
@@ -514,7 +574,7 @@ export function App({ shared }: AppProps = {}) {
     try {
       await restoreRealLocation({
         record,
-        endpoint: { host: settings.deviceHost, source: settings.tunnelSource },
+        endpoint: endpointFromSettings(settings),
         onStatus: setStatusMsg,
       });
       clearRecovery();
@@ -580,10 +640,14 @@ export function App({ shared }: AppProps = {}) {
     coordLat.setValue(coord.latitude);
     coordLng.setValue(coord.longitude);
     coordReady.setValue(true);
-    pendingCoord.setValue(coord);
-    const label = name?.trim() || "";
-    updatePlaceName(label);
-    setHistory(addHistory(label || "地图选点", coord.latitude, coord.longitude));
+    /*
+      地名和历史统一交给 `handleCoordChange`——跳转之后 MapPage 会回调它。
+
+      以前这里也写一遍，结果是：这边刚把「杭州大剧院」设上，MapPage 回调时
+      因为没带名字又走了「清空 + 反查」那条路，转眼变成一个街道名；历史也
+      顺带写了两条。名字跟着目标点一起传过去，那边据此决定要不要反查。
+    */
+    pendingCoord.setValue({ ...coord, name });
     closeSheet();
     fireToast("已定位到该坐标");
   }
@@ -1016,7 +1080,7 @@ export function App({ shared }: AppProps = {}) {
         try {
           await restoreRealLocation({
             record,
-            endpoint: { host: settingsRef.current.deviceHost, source: settingsRef.current.tunnelSource },
+            endpoint: endpointFromSettings(settingsRef.current),
           });
           clearRecovery();
           void endLiveActivity();
@@ -1048,7 +1112,9 @@ export function App({ shared }: AppProps = {}) {
    *
    * @param retry 能重连就传重连动作；不能（比如移动中）传 null
    */
-  async function handleSessionDropped(message: string, retryPoint: Coordinate | null) {
+  async function handleSessionDropped(initialMessage: string, retryPoint: Coordinate | null) {
+    // 重连过程中会被改写成「最后一次失败」的原因，见下面的循环。
+    let message = initialMessage;
     debugLog("ui", "会话中断", message);
     session.setValue(null);
     /*
@@ -1062,10 +1128,11 @@ export function App({ shared }: AppProps = {}) {
       放在最后统一收（见本函数末尾）。
     */
 
-    if (retryPoint && !reconnecting.current) {
-      reconnecting.current = true;
+    if (retryPoint && !reconnecting.value) {
+      reconnecting.setValue(true);
+      reconnectCancelled.current = false;
       setSessionState("connecting");
-      setStatusMsg("连接中断，正在重连…");
+      setStatusMsg("连接中断，正在重连…（可取消）");
       fireToast("连接中断，正在重连…");
       try {
         /*
@@ -1077,6 +1144,13 @@ export function App({ shared }: AppProps = {}) {
         */
         for (let attempt = 1; attempt <= RECONNECT_TRIES; attempt++) {
           await delay(RECONNECT_DELAY_MS);
+          // 用户按了取消就别再试了。整轮可能跑一分多钟，中途无从叫停很难受。
+          if (reconnectCancelled.current) {
+            debugLog("ui", `断线重连被用户取消（已试 ${attempt - 1} 次）`);
+            message = "重连已取消。设备可能仍停在模拟位置，重新连接一次再停即可。";
+            break;
+          }
+          setStatusMsg(`连接中断，正在重连…第 ${attempt}/${RECONNECT_TRIES} 次（可取消）`);
           try {
             await connectSession(retryPoint);
             debugLog("ui", `断线重连成功（第 ${attempt} 次）`);
@@ -1084,10 +1158,18 @@ export function App({ shared }: AppProps = {}) {
             return;
           } catch (error) {
             debugLog("ui", `断线重连第 ${attempt} 次失败`, describeError(error));
+            /*
+              报最后一次的错，不报最初那次掉线的原因。
+
+              掉线常常只是网络切换的一瞬，而重连连不上才是真正拦路的那件事
+              （比如切到蜂窝后配对服务不在了）。只报最初那句，用户照着查
+              永远查不到点子上。
+            */
+            message = error instanceof Error ? error.message : String(error);
           }
         }
       } finally {
-        reconnecting.current = false;
+        reconnecting.setValue(false);
       }
     }
 
@@ -1149,7 +1231,11 @@ export function App({ shared }: AppProps = {}) {
       setSessionState("idle");
       setStatusMsg("");
       debugLog("ui", "启动失败", describeError(e));
-      // 连不上先问一句，别直接甩错误——详见 ensureSession 里同样这段
+      // 只有「找不到配对服务」那一类才值得弹引导，其余直接说真因
+      if (!shouldOfferGuide(e)) {
+        showMessage(e instanceof Error ? e.message : String(e));
+        return;
+      }
       guideStart.current = { latitude: lat, longitude: lng };
       guideError.current = e;
       guideAttempts.setValue(0);
@@ -1165,6 +1251,23 @@ export function App({ shared }: AppProps = {}) {
     await handle.update(target.latitude, target.longitude);
     lastPushed.current = point;
     markActive(point.latitude, point.longitude);
+    /*
+      恢复记录跟着实际下发的位置走。
+
+      以前只在建会话时写一次，于是「上次的模拟没有正常结束 · 最后模拟到 X」
+      里的 X 永远是**起点**——移动了一路、或者点过几次「更新坐标」之后崩掉，
+      提示里给的还是出发地，用户照着判断就错了。
+    */
+    const nowMs = Date.now();
+    if (nowMs - recoverySavedAt.current > RECOVERY_SAVE_MS) {
+      recoverySavedAt.current = nowMs;
+      saveRecovery({
+        latitude: point.latitude,
+        longitude: point.longitude,
+        startedAt: recoveryStartedAt.current || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
     void updateLiveActivity(point);
   }
 
@@ -1456,10 +1559,7 @@ export function App({ shared }: AppProps = {}) {
     const target = deviceCoordinate(start.latitude, start.longitude);
     const handle = await startLocationSession({
       record: pairingRef.current!,
-      endpoint: {
-        host: settingsRef.current.deviceHost,
-        source: settingsRef.current.tunnelSource,
-      },
+      endpoint: endpointFromSettings(settingsRef.current),
       latitude: target.latitude,
       longitude: target.longitude,
       keepAlive: settingsRef.current.keepAlive,
@@ -1509,6 +1609,8 @@ export function App({ shared }: AppProps = {}) {
     lastPushed.current = start;
     markActive(start.latitude, start.longitude);
     const now = new Date().toISOString();
+    recoveryStartedAt.current = now;
+    recoverySavedAt.current = Date.now();
     saveRecovery({
       latitude: start.latitude,
       longitude: start.longitude,
@@ -1559,8 +1661,16 @@ export function App({ shared }: AppProps = {}) {
 
         最常见的原因是在用蜂窝数据——mDNS 在蜂窝接口上找不到配对服务，而这个
         要用户临时开一下飞行模式才能绕过去，光报个 Connection refused 没人知道
-        该干什么。读不到网络类型（Scripting 没有这个 API），所以让用户自己说。
+        该干什么。网络类型现在读得到（Device.getNetworkState），引导第一页会
+        直接说结论，不再反过来问用户。
+
+        但**只对得上这一类错误**：配对记录失效、权限被拒、隧道握手失败都另有
+        去处，弹这段讲蜂窝的说明只会误导。
       */
+      if (!shouldOfferGuide(e)) {
+        showMessage(e instanceof Error ? e.message : String(e));
+        return null;
+      }
       guideStart.current = start;
       guideError.current = e;
       guideAttempts.setValue(0);
@@ -1799,12 +1909,18 @@ export function App({ shared }: AppProps = {}) {
     const kmh = (choice.speed.metresPerSecond * 3.6).toFixed(1);
     setStatusMsg(`${label} · ${modeInfo(choice.mode).label} ${kmh} km/h`);
 
+    let lastTick = Date.now();
     const timer = setInterval(() => {
       const current = walker.value;
       const active = session.value;
       if (!current || !active) return;
 
-      const state = current.advance(MOVEMENT_TICK_MS / 1000);
+      // 按真实流逝的时间推进，不按定时器的标称间隔（它会被延迟、合并）。
+      const now = Date.now();
+      const elapsed = Math.min((now - lastTick) / 1000, MOVEMENT_MAX_STEP_S);
+      lastTick = now;
+
+      const state = current.advance(elapsed);
       void pushCoordinate(active, state.coordinate).catch((error) => {
         debugLog("ui", "移动中下发坐标失败", describeError(error));
       });
@@ -2018,18 +2134,24 @@ export function App({ shared }: AppProps = {}) {
     updateSelection(choice);
     setStatusMsg(`摇杆 · ${modeInfo(choice.mode).label} ${(choice.speed.metresPerSecond * 3.6).toFixed(1)} km/h`);
 
+    let lastJoystickTick = Date.now();
     const timer = setInterval(() => {
       const current = joystickPosition.value;
       const active = session.value;
       const vector = joystickVector.value;
       if (!current || !active) return;
 
+      // 同路线推进：按真实流逝的时间，不按标称间隔。
+      const now = Date.now();
+      const elapsed = Math.min((now - lastJoystickTick) / 1000, MOVEMENT_MAX_STEP_S);
+      lastJoystickTick = now;
+
       const next = joystickStep(
         current,
         vector.dx,
         vector.dy,
         choice.speed.metresPerSecond,
-        MOVEMENT_TICK_MS / 1000,
+        elapsed,
       );
       if (next.latitude === current.latitude && next.longitude === current.longitude) return;
 
@@ -2099,10 +2221,7 @@ export function App({ shared }: AppProps = {}) {
           try {
             await restoreRealLocation({
               record,
-              endpoint: {
-                host: settingsRef.current.deviceHost,
-                source: settingsRef.current.tunnelSource,
-              },
+              endpoint: endpointFromSettings(settingsRef.current),
             });
             debugLog("ui", "重连补发停止成功");
             clearRecovery();
@@ -2760,6 +2879,30 @@ export function App({ shared }: AppProps = {}) {
                     </Text>
                   </HStack>
                 </Button>
+                {/*
+                  重连期间给个叫停的出口。
+
+                  五轮重连加上每轮的等待和超时，整段可能跑一分多钟，而那期间
+                  「开始位置模拟」是灰的——用户除了干等没有别的选择。只有真在
+                  重连时才出现，首次连接那几秒不必打扰。
+                */}
+                {sessionState === "connecting" && reconnecting.value ? (
+                  <Button
+                    action={() => {
+                      reconnectCancelled.current = true;
+                      setStatusMsg("正在取消重连…");
+                    }}
+                    background={{ style: "tertiarySystemFill", shape: "capsule" }}
+                  >
+                    <Text
+                      font="subheadline"
+                      foregroundStyle="label"
+                      padding={{ vertical: 10, leading: 16, trailing: 16 }}
+                    >
+                      取消
+                    </Text>
+                  </Button>
+                ) : null}
               </>
             )}
           </HStack>
