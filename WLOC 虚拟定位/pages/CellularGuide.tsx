@@ -60,15 +60,46 @@ function PrimaryButton({ title, tint, action }: { title: string; tint: Color; ac
   );
 }
 
-/** 次要按钮：暗底胶囊，不占满整行。 */
+/**
+ * 次要按钮：暗底胶囊，**和主按钮一样整行**。
+ *
+ * 原先它是窄的（左右各留 22 的内边距、不占满），结果「我正在使用移动数据」的
+ * 可点区域只有「重试」的一半多点。而这个浮层弹出来的时候，用的多半**就是**
+ * 蜂窝——那才是最常走的那条路，却最难按。
+ *
+ * 颜色上仍然分主次（实心蓝 vs 暗底），但点击面积不该跟着分。
+ */
 function SecondaryButton({ title, action }: { title: string; action: () => void }) {
   return (
-    <Button action={action}>
+    <Button action={action} frame={{ maxWidth: "infinity" }}>
+      <Text
+        font="body"
+        fontWeight="medium"
+        foregroundStyle="label"
+        frame={{ maxWidth: "infinity" }}
+        padding={{ vertical: 12 }}
+        background={{ style: "tertiarySystemFill", shape: "capsule" }}
+      >
+        {title}
+      </Text>
+    </Button>
+  );
+}
+
+/**
+ * 最轻的那一档：无底色，但**点击区域仍是整行**。
+ *
+ * 原先是裸的一行 `Text`，可点范围就只有那两个字那么大，在一堆整行胶囊中间
+ * 显得特别难按。视觉轻重靠颜色和字号表达就够了，不必拿可点面积去表达。
+ */
+function TextButton({ title, action }: { title: string; action: () => void }) {
+  return (
+    <Button action={action} frame={{ maxWidth: "infinity" }}>
       <Text
         font="subheadline"
-        foregroundStyle="label"
-        padding={{ vertical: 9, leading: 22, trailing: 22 }}
-        background={{ style: "tertiarySystemFill", shape: "capsule" }}
+        foregroundStyle="secondaryLabel"
+        frame={{ maxWidth: "infinity" }}
+        padding={{ vertical: 8 }}
       >
         {title}
       </Text>
@@ -168,9 +199,7 @@ export function CellularGuide({
           />
           <PrimaryButton title="重试" tint="systemBlue" action={onRetry} />
           <SecondaryButton title="我正在使用移动数据" action={onUseCellular} />
-          <Button action={onCancel}>
-            <Text font="subheadline" foregroundStyle="secondaryLabel">取消</Text>
-          </Button>
+          <TextButton title="取消" action={onCancel} />
         </VStack>
       ) : stage === "airplaneOn" ? (
         <VStack spacing={12} frame={{ maxWidth: "infinity" }}>
@@ -201,9 +230,7 @@ export function CellularGuide({
             下一轮，而这流程对时机敏感。按它立刻再试一次，人留在引导里。
           */}
           <PrimaryButton title="继续" tint="systemBlue" action={onRetryNow} />
-          <Button action={onCancel}>
-            <Text font="subheadline" foregroundStyle="secondaryLabel">取消</Text>
-          </Button>
+          <TextButton title="取消" action={onCancel} />
         </VStack>
       ) : (
         <VStack spacing={14} frame={{ maxWidth: "infinity" }}>
