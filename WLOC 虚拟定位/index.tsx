@@ -39,6 +39,7 @@ import {
   type VirtualNode,
   type Color,
   type KeywordPoint,
+  type ScriptingApi,
 } from "scripting";
 // Animation 与 withAnimation 是全局声明，不从 "scripting" 导出，直接用即可。
 import type { ActiveLocation, AppSettings, Coordinate, FavoriteLocation, MapLayerId, SessionState } from "./types";
@@ -56,10 +57,8 @@ import {
   loadRecovery,
   saveRecovery,
   clearRecovery,
-  markSessionBeat,
-  clearSessionBeat,
-  takeRestoreRequest,
-  ackRestore,
+  saveSessionID,
+  clearSessionID,
 } from "./utils/storage";
 import { MapPage } from "./pages/MapPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -102,9 +101,6 @@ const MOVEMENT_TICK_MS = 500;
 const RECONNECT_DELAY_MS = 2000;
 const RECONNECT_TRIES = 5;
 
-/** 会话中报平安、查卡片恢复请求的节拍。app_intents.tsx 按它定「主脚本还在」的判据。 */
-const RESTORE_POLL_MS = 1000;
-
 /**
  * 这次是作为 Scripting 首页的 Tab 在跑，而不是从脚本列表点开的一次运行。
  *
@@ -112,6 +108,9 @@ const RESTORE_POLL_MS = 1000;
  * 没有可以关闭的模态，也不该调 `Script.exit()`。
  */
 const IS_HOME_TAB = Script.env === "home_screen";
+
+/** 当前在跑哪种移动。 */
+type MovementKind = "none" | "route" | "joystick";
 
 interface PlannedRoute {
   name?: string;
@@ -140,6 +139,18 @@ export function App({ shared }: AppProps = {}) {
   const [favorites, setFavorites] = useState<FavoriteLocation[]>(() => loadFavorites());
   const [history, setHistory] = useState<FavoriteLocation[]>(() => loadHistory());
   const [pairing, setPairing] = useState<PairingRecord | null>(() => loadPairing());
+  /*
+    设置和配对记录的「当前值」。
+
+    只挂一次的 effect（会话通道、网络监听）里**不能直接读 state**：那些闭包捕获
+    的是首次渲染时的值，之后用户在本次运行里完成配对、或者改了隧道来源，它们
+    一概看不见——引导会拿着一份空的配对记录一直重试。
+    每次渲染同步一下，用的地方读 `.current`。
+  */
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const pairingRef = useRef(pairing);
+  pairingRef.current = pairing;
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [statusMsg, setStatusMsg] = useState("");
   const [showCredit, setShowCredit] = useState(true);
@@ -147,13 +158,44 @@ export function App({ shared }: AppProps = {}) {
   const session = useObservable<LocationSessionHandle | null>(null);
 
   // 移动模拟：推进器与定时器放 observable 里，避免重渲染时被重建。
-  const [movementKind, setMovementKind] = useState<"none" | "route" | "joystick">("none");
+  const [movementKind, setMovementKind] = useState<MovementKind>("none");
   const [paused, setPaused] = useState(false);
   const [selection, setSelection] = useState<MovementSelection>(() => ({
     mode: "walking",
     speed: defaultSpeed("walking"),
     lapPlan: "oneWay",
   }));
+  /*
+    移动方式和参数另存一份 ref，理由同 placeNameRef。
+
+    移动的推进定时器是在点「开始」那一帧建的，那时 `movementKind` 还是 "none"，
+    之后的重渲染**改不到这个闭包**。而卡片每一拍都经
+    `pushCoordinate → updateLiveActivity` 构造，只读 state 的话永远是定点的样子：
+    方式为空、速度 0、没有进度条。
+    界面渲染照常用 state，只有卡片那条路读 ref。
+  */
+  const movementKindRef = useRef<MovementKind>("none");
+  const selectionRef = useRef(selection);
+  /**
+   * 最后一次真正下发给设备的地图坐标。掉线重连就回到它。
+   *
+   * 以前重连目标是**建会话时**定死的（`connectSession` 的 `reconnectTo` 参数），
+   * 于是点过「更新坐标」之后再掉线，会被拉回最初那个点。原生版的做法是每次
+   * 下发都更新重连目标，这里照搬。
+   */
+  const lastPushed = useRef<Coordinate | null>(null);
+
+  /** 写移动方式。两份一起写——别绕过它直接调 `setMovementKind`。 */
+  function updateMovementKind(kind: MovementKind) {
+    movementKindRef.current = kind;
+    setMovementKind(kind);
+  }
+
+  /** 写移动参数。两份一起写——别绕过它直接调 `setSelection`。 */
+  function updateSelection(choice: MovementSelection) {
+    selectionRef.current = choice;
+    setSelection(choice);
+  }
   /** 规划出的全部方案，选中的那条才是要走的。 */
   const [routes, setRoutes] = useState<PlannedRoute[]>([]);
   const [routeIndex, setRouteIndex] = useState(0);
@@ -205,10 +247,16 @@ export function App({ shared }: AppProps = {}) {
   */
   const guideStage = useObservable<GuideStage | null>(null);
   const guideAttempts = useObservable(0);
+  /**
+   * 当前是不是走蜂窝。`null` = 还没测出来。
+   *
+   * `Device.getNetworkState()` 是 2026-10-16 那版 TF 新加的。在那之前读不到
+   * 网络类型，蜂窝引导只能开口问用户「你在用 WiFi 还是流量」——而用户自己
+   * 往往也说不准（连着 WiFi 却走蜂窝太常见）。
+   */
+  const onCellular = useObservable<boolean | null>(null);
   const guideStart = useRef<Coordinate | null>(null);
   const guideError = useRef<unknown>(null);
-  /** 引导连上之后，这条会话掉线该怎么办。和直连那条路保持一致。 */
-  const guideDropRetry = useRef<Coordinate | null>(null);
   const guideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 正在跑一次建会话。轮询和「继续」可能撞上，用它互斥。 */
   const guideBusy = useRef(false);
@@ -285,10 +333,63 @@ export function App({ shared }: AppProps = {}) {
     showError.setValue(true);
   }
 
-  // 一次性把 VPN / 本机隧道 / 定位的授权都申请掉，省得中途被弹窗打断。
+  /**
+   * 按脚本授权的结果。`null` = 还没问过（或这个环境不弹窗）。
+   *
+   * 只有用户在设置里打开「Require Per-Script Permission」时才真的拦截，
+   * 但一旦打开、又拒掉了 `localDevVPN`，后面建隧道会直接报权限错——而那个错
+   * 会一路漏到 `openRSDTunnel`，被包装成「建立加密隧道失败……卡在隧道握手
+   * 这一步」，把人引去查隧道和代理，查不出所以然。
+   */
+  const granted = useRef<ScriptingApi[] | null>(null);
+
+  /*
+    一次性把 VPN / 本机隧道 / 定位的授权都申请掉，省得中途被弹窗打断。
+
+    **结果必须留下来。** 以前是 `.catch(() => undefined)` 把返回值整个丢了，
+    等于白问一场。clipboard / fileSystem 故意不在这里申请：按最小权限，
+    等真要读剪贴板或导入文件时再弹，用不到那些功能的人不该被问。
+  */
   useEffect(() => {
-    void Script.requestAccess(["vpn", "localDevVPN", "location"]).catch(() => undefined);
+    void Script.requestAccess(["vpn", "localDevVPN", "location"])
+      .then((list) => {
+        granted.current = list;
+        debugLog("perm", `已授权：${list.join("、") || "（无）"}`);
+      })
+      .catch((error) => {
+        // 没有呈现视图的环境（Widget / 分享扩展等）不弹窗，这里也拿不到结果。
+        debugLog("perm", "申请授权失败", describeError(error));
+      });
   }, []);
+
+  /**
+   * 建会话前先过一道权限闸。
+   *
+   * @returns 缺的那项能力名；齐全或无从判断时返回 null
+   */
+  function missingAccess(): ScriptingApi | null {
+    const list = granted.current;
+    // 没问过就别拦——「Require Per-Script Permission」默认是关的，
+    // 这种情况下 requestAccess 本来就不弹窗，拦了反而误伤。
+    if (!list) return null;
+    if (!list.includes("localDevVPN")) return "localDevVPN";
+    // 代理模式下不需要 Scripting 自己的 VPN，名额本来就让出去了。
+    if (settingsRef.current.tunnelSource === "builtIn" && !list.includes("vpn")) return "vpn";
+    return null;
+  }
+
+  /** 权限被拒时的说明。两个入口共用。 */
+  function accessDeniedMessage(api: ScriptingApi): string {
+    const label = api === "vpn" ? "VPN" : "本机开发者隧道（LocalDevVPN）";
+    return [
+      `缺少「${label}」权限`,
+      "这台设备开启了「按脚本单独授权」，而本脚本的这项权限被拒过。",
+      "",
+      "去 Scripting 的设置里找到本脚本的权限项重新允许，再回来开始模拟。",
+      "整条链路都走系统的开发者通道，没有这项权限连不上设备。",
+    ].join("\n");
+  }
+
 
   useEffect(() => {
     const timer = setTimeout(() => setShowCredit(false), 3000);
@@ -320,6 +421,57 @@ export function App({ shared }: AppProps = {}) {
     if (!shared) return;
     debugLog("intent", `分享落点 ${shared.latitude.toFixed(5)}, ${shared.longitude.toFixed(5)}`);
     handlePick({ latitude: shared.latitude, longitude: shared.longitude }, shared.name);
+  }, []);
+
+  /*
+    跟踪网络类型。
+
+    `addNetworkChangeListener` 会先给一次当前快照，之后只推变化——所以这一个
+    监听既负责初始值，也负责后续。不必自己调一次 `getNetworkState()`
+    （那个还要等系统给首个路径，最多 10 秒）。
+
+    对蜂窝引导的意义不止是「不用问用户」：开关飞行模式那几秒，接口变化会从
+    这里推过来，重试可以**由它驱动**，不必再 1.5 秒一次地盲试。隧道重连上的
+    窗口很短，盲轮询常常整段错过。
+  */
+  useEffect(() => {
+    // 分享 / 快捷指令环境下这一页只是过客，没有引导也不该挂监听。
+    if (Script.env !== "index" && Script.env !== "home_screen") return;
+
+    const listener = (state: Device.NetworkState) => {
+      /*
+        三态，不是是非题。
+
+        接口列表里只有 `other`（代理工具的全局隧道会这样）或者干脆是空的时候，
+        既不能说在用蜂窝、也不能说在用 WiFi。以前写成
+        `includes("cellular") && !includes("wifi")`，这两种情况都会落成 false，
+        引导于是一口咬定「检测到正在用 WiFi」——而用户可能正拿着 5G。
+        拿不准就老实说拿不准，那一档的文案本来就是中性的。
+      */
+      const cellular = state.interfaces.includes("wifi")
+        ? false
+        : state.interfaces.includes("cellular")
+          ? true
+          : null;
+      const before = onCellular.value;
+      onCellular.setValue(cellular);
+      debugLog("net", `接口 ${state.interfaces.join("/") || "无"}（${state.status}）`);
+
+      /*
+        正在等飞行模式切换时，网络一恢复就立刻试一次。
+
+        这是比定时重试准得多的信号：用户关掉飞行模式的那一刻接口就回来了，
+        而那正是配对服务重新上线的时候。定时器照常留着兜底。
+      */
+      if (guideStage.value === "airplaneOn" && before !== null && state.status === "satisfied") {
+        debugLog("guide", "网络恢复，立刻重试一次");
+        // 走 ref：这个 effect 只挂一次，直接调会永远用首次渲染那份
+        // （连本次运行里刚配好的记录都看不见）。
+        attemptInGuideRef.current();
+      }
+    };
+    Device.addNetworkChangeListener(listener);
+    return () => Device.removeNetworkChangeListener(listener);
   }, []);
 
   // 上次会话没正常收尾时主动问一句——设备那头可能还保持着模拟位置。
@@ -641,6 +793,9 @@ export function App({ shared }: AppProps = {}) {
 
   /** 设置页改一项存一项，不在这里关表单，也不弹提示——否则每敲一个字都要弹。 */
   function handleSettingsChange(next: AppSettings) {
+    // 立刻同步 ref，不等重渲染：移动中改了灵动岛样式，下一拍（0.5 秒）就会
+    // 经定时器重建卡片，那条路读的是 ref。
+    settingsRef.current = next;
     setSettings(next);
     saveSettings(next);
     layer.setValue(next.defaultLayer);
@@ -706,12 +861,62 @@ export function App({ shared }: AppProps = {}) {
    * 之前只接了 reject 分支，被拒也当成成功，于是锁屏掉线时界面上毫无线索。
    * 文档：Scripting Documentation / background_keeper。
    */
+  /**
+   * 保活为什么没成。
+   *
+   * 后台保活靠的是**共享音频引擎**（dts 原文：App-wide audio state、
+   * Audio failure resolves to false），所以被拒几乎都是音频被别人占着——
+   * 在放歌、在通话、在录音。跟 WiFi 还是蜂窝没有任何关系，而旧提示只说
+   * 「系统拒绝了后台保活」，用户自然会往网络上想。
+   *
+   * `getState().lastFailure` 是这次 TF 新给的，能直接拿到原因。
+   */
+  async function keepAliveFailureHint(): Promise<string> {
+    try {
+      const state = await BackgroundKeeper.getState();
+      debugLog("keepalive", "保活状态", JSON.stringify(state));
+      if (state.status === "interrupted") return "音频被其他 App 打断了（在放歌或通话？）";
+      if (state.lastFailure) return state.lastFailure;
+    } catch (error) {
+      debugLog("keepalive", "读保活状态失败", describeError(error));
+    }
+    return "多半是音频被其他 App 占着";
+  }
+
+  /** 首页 Tab 下「锁屏会掉线」只提醒一次，别每次进后台都弹。 */
+  const homeTabKeepAliveWarned = useRef(false);
+
   async function acquireKeepAlive(): Promise<void> {
+    /*
+      首页 Tab 里根本没有后台保活这回事。
+
+      文档写明 BackgroundKeeper「仅当脚本在主应用中运行（即 Script.env === "index"）
+      时可用」——Tab 环境下调它必然返回 false。那不是「系统拒绝」，更不是音频被
+      占着，是这个入口不支持。照旧提示会把人引到完全错误的方向（去关音乐、
+      查通话），实际上怎么关都没用。
+
+      代价得说清楚：Tab 的实例虽然常驻（切 Tab 不停），但**锁屏仍然会被挂起**，
+      没有保活就会掉线。所以提醒一次，不反复刷。
+    */
+    if (Script.env !== "index") {
+      debugLog("keepalive", `${Script.env} 环境不支持后台保活（仅 index 可用），跳过`);
+      if (!homeTabKeepAliveWarned.current) {
+        homeTabKeepAliveWarned.current = true;
+        // 分享进来的那条路也一样，不是首页 Tab 独有。
+        fireToast(
+          IS_HOME_TAB
+            ? "首页标签页不支持后台保活，锁屏会掉线；从脚本列表打开则不受影响"
+            : "这个入口不支持后台保活，锁屏会掉线；从脚本列表打开则不受影响",
+        );
+      }
+      return;
+    }
+
     try {
       const started = await BackgroundKeeper.keepAlive();
       debugLog("keepalive", `keepAlive() 返回 ${started}`);
       if (!started) {
-        fireToast("系统拒绝了后台保活，锁屏后会掉线");
+        fireToast(`后台保活没起来：${await keepAliveFailureHint()}`);
         return;
       }
       // 以应用自己报的状态为准，不是以我们调过为准。
@@ -757,31 +962,81 @@ export function App({ shared }: AppProps = {}) {
   */
   const stopSessionRef = useRef(handleStopSession);
   stopSessionRef.current = handleStopSession;
+  /*
+    挂一个会话，等锁屏卡片来喊停。
+
+    以前是拿 Storage 当信箱：这里每秒醒一次查有没有请求、顺手写一次心跳，
+    intent 那头投完请求再每 300 毫秒查回执。`ScriptSession` 把这套换成了直接的
+    请求/应答——定时器、心跳、TTL、撤回全都不需要了，响应也不再等一个轮询周期。
+
+    几条规矩：
+      - **只能从 index / home_screen 注册**。`intent.tsx` 也会渲染这个组件，
+        那边不能注册，否则等于自己给自己发请求。
+      - 主脚本退出时系统会关掉 session，Storage 里的 ID 就成了陈旧值。不用
+        特意清——intent 拿它 request 会失败，正好触发「自己连设备」的回落。
+      - 处理函数里**不能**依赖闭包里的 `handleStopSession`：这个 effect 只跑一次，
+        直接引用会永远拿着首次渲染那份。走 ref。
+  */
   useEffect(() => {
+    if (Script.env !== "index" && Script.env !== "home_screen") return;
+
     let busy = false;
-    let beating = false;
-    const timer = setInterval(() => {
-      if (busy) return;
-      if (session.value === null) {
-        if (beating) {
-          clearSessionBeat();
-          beating = false;
-        }
-        return;
-      }
-      markSessionBeat();
-      beating = true;
-      const id = takeRestoreRequest();
-      if (!id) return;
+    const id = ScriptSession.register(async (message) => {
+      const type = (message as { type?: string } | null)?.type;
+      if (type !== "restore") return { ok: false, message: `不认识的请求：${String(type)}` };
+
+      // 同一时刻只处理一个：连点两下卡片按钮不该叠两次停止流程。
+      if (busy) return { ok: false, message: "正在处理上一个请求" };
+
       busy = true;
-      debugLog("liveactivity", "收到卡片上的恢复请求");
-      void stopSessionRef.current(true)
-        .then((failure) => ackRestore({ id, ok: failure === null, message: failure ?? undefined }))
-        .finally(() => {
-          busy = false;
-        });
-    }, RESTORE_POLL_MS);
-    return () => clearInterval(timer);
+      debugLog("liveactivity", `收到卡片上的恢复请求（会话${session.value ? "在" : "不在"}）`);
+      try {
+        // 有现成会话就用它收尾，最快也最稳。
+        if (session.value !== null) {
+          const failure = await stopSessionRef.current(true);
+          // message 用 null 不用 undefined：ScriptSession 的回值要能 JSON 化。
+          return { ok: failure === null, message: failure };
+        }
+
+        /*
+          没有会话，也**必须由主脚本来做**，不能回给 intent 自己连。
+
+          文档（local_dev_vpn）写明本机隧道「所有操作仅允许原始活跃主 App 脚本」
+          ——intent 那边的 `restoreDirectly` 根本调不动 openRSDTunnel。以前靠它
+          兜底其实是假的；而「没有会话」恰恰是最需要兜底的几种场景：启动时发现
+          上次没收尾、断线重连期间、以及停止失败之后（那条提示本身就让用户去点
+          卡片）。这些时候设备很可能还停在模拟位置。
+
+          所以这里自己连一次补发停止——和「上次没正常结束」走的是同一条路。
+        */
+        const record = loadPairing();
+        if (!record) return { ok: false, message: "没有配对记录，无法连上设备恢复" };
+
+        debugLog("liveactivity", "本地没有会话，主脚本自己连上去补发停止");
+        try {
+          await restoreRealLocation({
+            record,
+            endpoint: { host: settingsRef.current.deviceHost, source: settingsRef.current.tunnelSource },
+          });
+          clearRecovery();
+          void endLiveActivity();
+          return { ok: true, message: null };
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          debugLog("liveactivity", "主脚本补发停止失败", describeError(error));
+          return { ok: false, message: detail };
+        }
+      } finally {
+        busy = false;
+      }
+    });
+    saveSessionID(id);
+    debugLog("liveactivity", `已注册会话通道（env=${Script.env}）`);
+
+    return () => {
+      ScriptSession.unregister(id);
+      clearSessionID();
+    };
   }, []);
 
   /**
@@ -796,9 +1051,16 @@ export function App({ shared }: AppProps = {}) {
   async function handleSessionDropped(message: string, retryPoint: Coordinate | null) {
     debugLog("ui", "会话中断", message);
     session.setValue(null);
-    // 恢复记录故意不删：连接是异常断的，停止指令未必送达，
-    // 下次启动仍要提示用户恢复。
-    void BackgroundKeeper.stopKeepAlive().catch(() => undefined);
+    /*
+      恢复记录故意不删：连接是异常断的，停止指令未必送达，
+      下次启动仍要提示用户恢复。
+
+      **保活也先不放。** 掉线十有八九发生在锁屏时，而下面那段重连要等
+      2 秒再试、最多五轮——这会儿把保活撤了，整个循环立刻跟着被挂起，
+      等用户解锁回来才继续跑，那时它可能把已经恢复的真实位置又改回假的。
+      原生版的注释写的是同一件事：重连间隙不释放保活。
+      放在最后统一收（见本函数末尾）。
+    */
 
     if (retryPoint && !reconnecting.current) {
       reconnecting.current = true;
@@ -816,7 +1078,7 @@ export function App({ shared }: AppProps = {}) {
         for (let attempt = 1; attempt <= RECONNECT_TRIES; attempt++) {
           await delay(RECONNECT_DELAY_MS);
           try {
-            await connectSession(retryPoint, retryPoint);
+            await connectSession(retryPoint);
             debugLog("ui", `断线重连成功（第 ${attempt} 次）`);
             fireToast("已重新连上");
             return;
@@ -829,6 +1091,13 @@ export function App({ shared }: AppProps = {}) {
       }
     }
 
+    /*
+      走到这儿才是真的放弃：要么不重连，要么五轮都失败了。
+      保活到这一刻才撤——上面那段重连需要它撑着（见函数开头）。
+    */
+    void BackgroundKeeper.stopKeepAlive().catch(() => undefined);
+    // 重连全败时移动也停掉，否则界面一直停在「移动中」，而底下根本没有会话。
+    stopMovement();
     setSessionState("idle");
     setStatusMsg("");
     activeLoc.setValue(null);
@@ -840,6 +1109,13 @@ export function App({ shared }: AppProps = {}) {
   async function handleStartSession() {
     if (!pairing) {
       showMessage("还没有配对。去「配对」页点「配对这台设备」，或导入已有的配对记录");
+      return;
+    }
+    // 权限不全就别往下连：缺 localDevVPN 时错误会一路漏到建隧道那一步，
+    // 报成「卡在隧道握手」，把人引去查代理和网络。
+    const denied = missingAccess();
+    if (denied) {
+      showMessage(accessDeniedMessage(denied));
       return;
     }
     if (!coordReady.value) {
@@ -867,7 +1143,7 @@ export function App({ shared }: AppProps = {}) {
       就只能有一份实现。
     */
     try {
-      await connectSession({ latitude: lat, longitude: lng }, { latitude: lat, longitude: lng });
+      await connectSession({ latitude: lat, longitude: lng });
       fireToast("位置模拟已启动");
     } catch (e) {
       setSessionState("idle");
@@ -875,7 +1151,6 @@ export function App({ shared }: AppProps = {}) {
       debugLog("ui", "启动失败", describeError(e));
       // 连不上先问一句，别直接甩错误——详见 ensureSession 里同样这段
       guideStart.current = { latitude: lat, longitude: lng };
-      guideDropRetry.current = { latitude: lat, longitude: lng };
       guideError.current = e;
       guideAttempts.setValue(0);
       guideStage.setValue("help");
@@ -888,6 +1163,7 @@ export function App({ shared }: AppProps = {}) {
   async function pushCoordinate(handle: LocationSessionHandle, point: Coordinate): Promise<void> {
     const target = deviceCoordinate(point.latitude, point.longitude);
     await handle.update(target.latitude, target.longitude);
+    lastPushed.current = point;
     markActive(point.latitude, point.longitude);
     void updateLiveActivity(point);
   }
@@ -902,19 +1178,27 @@ export function App({ shared }: AppProps = {}) {
    *                 不传就用当前 settings。
    */
   function liveActivityState(point: Coordinate, override?: AppSettings): SimulationState {
-    const conf = override ?? settings;
-    const info = modeInfo(selection.mode);
-    const moving = movementKind !== "none";
+    /*
+      这几个值一律读 ref，不读 state。
+
+      卡片的每一拍都由移动定时器触发，而那个回调绑死在点「开始」的那一帧——
+      读 state 就永远是定点的样子。见 movementKindRef 处的说明。
+    */
+    const conf = override ?? settingsRef.current;
+    const kind = movementKindRef.current;
+    const choice = selectionRef.current;
+    const info = modeInfo(choice.mode);
+    const moving = kind !== "none";
     // 摇杆是手推的，没有「总长」可言；沿路线/手绘才有进度。
-    const walk = movementKind === "route" ? walker.value?.state : undefined;
+    const walk = kind === "route" ? walker.value?.state : undefined;
     return {
       title: cardStatus(conf),
       place: cardTitle(conf),
       latitude: point.latitude,
       longitude: point.longitude,
-      mode: moving ? (movementKind === "joystick" ? `摇杆 · ${info.label}` : info.label) : "",
+      mode: moving ? (kind === "joystick" ? `摇杆 · ${info.label}` : info.label) : "",
       modeIcon: moving ? info.systemImage : "",
-      speedKmh: moving ? selection.speed.metresPerSecond * 3.6 : 0,
+      speedKmh: moving ? choice.speed.metresPerSecond * 3.6 : 0,
       travelled: walk?.travelled ?? 0,
       total: walk?.total ?? 0,
       leg: (walk?.leg ?? 0) + 1,
@@ -993,7 +1277,7 @@ export function App({ shared }: AppProps = {}) {
         // 计时由卡片那边用系统计时器画（compactTimer），这里不出文字
         return "";
       case "status":
-        return movementKind === "none" ? "模拟中" : walk?.paused ? "已暂停" : "移动中";
+        return movementKindRef.current === "none" ? "模拟中" : walk?.paused ? "已暂停" : "移动中";
       case "place":
         // 地名放得下就用地名，放不下系统会按 minScaleFactor 缩，仍比坐标好认。
         // 同 cardTitle，读 ref 以拿到刚反查回来的那个值。
@@ -1001,9 +1285,9 @@ export function App({ shared }: AppProps = {}) {
       case "coordinate":
         return shortCoord;
       case "speed":
-        return movementKind === "none"
+        return movementKindRef.current === "none"
           ? ""
-          : `${(selection.speed.metresPerSecond * 3.6).toFixed(1)}`;
+          : `${(selectionRef.current.speed.metresPerSecond * 3.6).toFixed(1)}`;
       case "progress":
         return ratio === null ? "" : `${Math.round(ratio * 100)}%`;
       case "custom":
@@ -1104,8 +1388,24 @@ export function App({ shared }: AppProps = {}) {
     walker.setValue(null);
     joystickVector.setValue({ dx: 0, dy: 0 });
     joystickPosition.setValue(null);
-    setMovementKind("none");
+    updateMovementKind("none");
     setPaused(false);
+  }
+
+  /**
+   * 移动结束、但会话还在：停掉推进，并把卡片切回定点的样子。
+   *
+   * 这一步不能省。卡片只在 start / update 时重算，而移动一停，驱动它的定时器
+   * 也没了——不主动刷一次，锁屏上会一直停在「移动中 · 3.2/5.0 km」。
+   * 以前看不出来是因为卡片根本没显示过移动状态（见 movementKindRef）。
+   *
+   * `stopMovement` 自己不带这个刷新：它还会在「开始新一段移动之前」和
+   * 「整个会话停止时」被调用，那两处都不需要先刷回定点。
+   */
+  function finishMovement() {
+    stopMovement();
+    const loc = activeLoc.value;
+    if (session.value && loc) void updateLiveActivity(loc);
   }
 
   /**
@@ -1144,37 +1444,69 @@ export function App({ shared }: AppProps = {}) {
   async function connectSession(
     start: Coordinate,
     /**
-     * 掉线后要重连到哪个点；null 表示不重连。
+     * 「这一轮还算不算数」。引导的重试会传。
      *
-     * 定点模拟传自己的坐标——位置是个固定值，重连一次就回来了。
-     * 沿路线/摇杆移动传 null：重连要从头建会话，而路径进度、往返计数都在
-     * PathWalker 里，续不上，只能停掉如实报错，让用户自己决定重来。
-     *
-     * 这里收坐标而不是回调，是因为上一版传的回调正是 handleStartSession，
-     * 而它失败会弹蜂窝引导——于是「断线→重连→失败→弹引导→连上→再断线」
-     * 转成了死循环。重连该自己闷头试，不该把用户拽回引导。
+     * 建会话整条链路可能跑得比调用方的耐心还久（引导一轮只等 10 秒），而
+     * `withTimeout` 只是**不再等待**——底下这个流程照样会跑完，然后把会话
+     * 写进状态、起卡片。于是引导还开着、界面却已经「模拟中」，更糟的是
+     * 下一轮又建一条，先建的那个句柄没人持有却仍在每 4 秒重发假坐标。
      */
-    reconnectTo: Coordinate | null = null,
+    stillWanted?: () => boolean,
   ): Promise<LocationSessionHandle> {
     const target = deviceCoordinate(start.latitude, start.longitude);
     const handle = await startLocationSession({
-      record: pairing!,
-      endpoint: { host: settings.deviceHost, source: settings.tunnelSource },
+      record: pairingRef.current!,
+      endpoint: {
+        host: settingsRef.current.deviceHost,
+        source: settingsRef.current.tunnelSource,
+      },
       latitude: target.latitude,
       longitude: target.longitude,
-      keepAlive: settings.keepAlive,
+      keepAlive: settingsRef.current.keepAlive,
       onStatus: (message) => {
         debugLog("status", message);
         setStatusMsg(message);
       },
       onFailure: (message) => {
-        if (!reconnectTo) stopMovement();
-        void handleSessionDropped(message, reconnectTo);
+        /*
+          重连与否、重连到哪，都按**掉线那一刻**的实际状态定，不看建会话时的入口。
+
+          以前这两件事由入口静态决定（定点入口允许重连、移动入口不允许），
+          于是两头都不对：定点会话上后来开始移动，掉线会把人瞬移回原来那个定点；
+          而移动入口建的会话，移动结束后变回定点状态，却永远不再重连。
+
+          移动中确实不能重连——路径进度和往返计数都在 PathWalker 里，重建会话
+          续不上，只能停掉如实报错。但那是「现在在移动」决定的，不是入口。
+        */
+        const moving = movementKindRef.current !== "none";
+        if (moving) stopMovement();
+        void handleSessionDropped(message, moving ? null : lastPushed.current);
       },
     });
 
+    /*
+      建好了，但这会儿还要不要它是另一回事。
+
+      两种情况都得把它收掉，否则就是一条没人持有、却仍在每 4 秒重发假坐标的
+      会话——用户点了停止也停不掉它，因为句柄已经丢了：
+
+        1. 调用方已经放弃这一轮（引导超时）；
+        2. 这期间别处已经建成了一条（比如用户自己又点了开始）。
+
+      原生版同样要补这一手，见 LocalDeviceSessionCoordinator 起来后发现已取消
+      就补一次 cancel。
+    */
+    const unwanted = (stillWanted && !stillWanted()) || session.value !== null;
+    if (unwanted) {
+      debugLog("ui", "会话建好时已不再需要，立即收掉", JSON.stringify({ expired: !!stillWanted && !stillWanted(), replaced: session.value !== null }));
+      await handle.stop().catch(() => undefined);
+      throw new Error("这一轮已经作废");
+    }
+
     session.setValue(handle);
     setSessionState("active");
+    // 建会话时就下发了 start，重连目标从这一刻起生效。
+    lastPushed.current = start;
     markActive(start.latitude, start.longitude);
     const now = new Date().toISOString();
     saveRecovery({
@@ -1208,6 +1540,11 @@ export function App({ shared }: AppProps = {}) {
       showMessage("还没有配对。去「配对」页点「配对这台设备」，或导入已有的配对记录");
       return null;
     }
+    const denied = missingAccess();
+    if (denied) {
+      showMessage(accessDeniedMessage(denied));
+      return null;
+    }
 
     setSessionState("connecting");
     setStatusMsg("准备中…");
@@ -1225,8 +1562,6 @@ export function App({ shared }: AppProps = {}) {
         该干什么。读不到网络类型（Scripting 没有这个 API），所以让用户自己说。
       */
       guideStart.current = start;
-      // 移动场景不自动重连，理由见 connectSession 的 onDropRetry
-      guideDropRetry.current = null;
       guideError.current = e;
       guideAttempts.setValue(0);
       guideStage.setValue("help");
@@ -1290,6 +1625,15 @@ export function App({ shared }: AppProps = {}) {
     const run = ++guideRun.current;
     guideAttempts.setValue(guideAttempts.value + 1);
     /*
+      本轮作废的判据，交给 connectSession 在建成那一刻自查。
+
+      光靠轮次号不够：`withTimeout` 掐掉这一轮之后、下一轮开始之前，
+      `guideRun` 还没变，迟到的成功照样会写进状态。所以 catch 里立刻把
+      `roundAborted` 置上——它和 withTimeout 的 reject 是同一拍。
+    */
+    let roundAborted = false;
+    const stillWanted = () => !roundAborted && run === guideRun.current;
+    /*
       每一轮都要能自己结束。
 
       JS 没法取消已经发出的 Promise，而底下任何一步挂死都会让这一轮永远不落地，
@@ -1297,7 +1641,11 @@ export function App({ shared }: AppProps = {}) {
       「已试 2 次」之后再无动静。包一层超时，到点就放弃这一轮、放开闸门，
       让下一轮能重新发起。原生那版靠 Task.cancel 做同样的事。
     */
-    void withTimeout(connectSession(start, guideDropRetry.current), GUIDE_ATTEMPT_TIMEOUT_MS, "本轮超时")
+    void withTimeout(
+      connectSession(start, stillWanted),
+      GUIDE_ATTEMPT_TIMEOUT_MS,
+      "本轮超时",
+    )
       .then(() => {
         // 过期那一轮迟到的成功不算数，否则会把已经收起的引导又翻出来
         if (run !== guideRun.current) return;
@@ -1305,12 +1653,27 @@ export function App({ shared }: AppProps = {}) {
         guideStage.setValue("airplaneOff");
       })
       .catch((error) => {
+        // 这一拍和 withTimeout 的 reject 同时发生：立刻作废本轮，
+        // 迟到的 connectSession 建成后会据此自己收掉。
+        roundAborted = true;
         /*
           飞行模式开着的那几秒必然是 ENETUNREACH——隧道跟着断了。
           这是流程的一部分，不是故障，记一行短的就够；其他错误才值得记全。
         */
         const code = (error as { code?: string } | null)?.code ?? "";
         const message = error instanceof Error ? error.message : String(error);
+        /*
+          这一轮是被我们自己的计时器掐掉的，底下那次建隧道**还在跑**。
+
+          轮次超时 10 秒 < 原生隧道超时 15 秒，所以放弃时它多半没结束；而
+          `cancelRSDTunnelOpening()` 原本只在 openRSDTunnel 自己返回之后才调，
+          那时已经晚了。1.5 秒后的下一轮会撞上这条还没放弃的隧道——文档写明
+          同时只允许一条。所以这里主动收掉。
+        */
+        if (message.includes("本轮超时")) {
+          void VPN.localDevVPN.cancelRSDTunnelOpening().catch(() => undefined);
+          debugLog("guide", "本轮超时，已请求取消未完成的隧道打开");
+        }
         if (code === "ENETUNREACH") {
           debugLog("guide", `第 ${guideAttempts.value} 次：网络不可达（飞行模式开着时正常）`);
         } else if (message.includes("只绑在回环地址上")) {
@@ -1335,10 +1698,21 @@ export function App({ shared }: AppProps = {}) {
           快慢完全跟着上一轮走。
         */
         if (guideStage.value === "airplaneOn") {
-          guideTimer.current = setTimeout(attemptInGuide, GUIDE_RETRY_MS);
+          // 这里也走 ref：排下一轮时要用**那时**最新的版本，不是现在这份。
+          guideTimer.current = setTimeout(() => attemptInGuideRef.current(), GUIDE_RETRY_MS);
         }
       });
   }
+
+  /*
+    给网络监听和定时器用的「当前版本」。
+
+    `attemptInGuide` 每次渲染都会重新生成，它闭包里捏着 `pairing`、`settings`
+    这些 state。只挂一次的 effect 直接引用就永远停在首帧——用户在本次运行里
+    配好了对、或者改了隧道来源，重试统统看不见。
+  */
+  const attemptInGuideRef = useRef(attemptInGuide);
+  attemptInGuideRef.current = attemptInGuide;
 
   function beginGuideLoop() {
     if (!guideStart.current) return;
@@ -1387,7 +1761,7 @@ export function App({ shared }: AppProps = {}) {
     setSessionState("connecting");
     setStatusMsg("准备中…");
     try {
-      await connectSession(start, guideDropRetry.current);
+      await connectSession(start);
       guideStart.current = null;
       guideError.current = null;
     } catch (e) {
@@ -1419,8 +1793,8 @@ export function App({ shared }: AppProps = {}) {
 
     stopMovement();
     walker.setValue(instance);
-    setMovementKind("route");
-    setSelection(choice);
+    updateMovementKind("route");
+    updateSelection(choice);
 
     const kmh = (choice.speed.metresPerSecond * 3.6).toFixed(1);
     setStatusMsg(`${label} · ${modeInfo(choice.mode).label} ${kmh} km/h`);
@@ -1442,9 +1816,7 @@ export function App({ shared }: AppProps = {}) {
       setStatusMsg(`${label} · ${travelledKm}/${totalKm} km${legText}${pauseText}`);
 
       if (state.finished) {
-        clearMovementTimer();
-        walker.setValue(null);
-        setMovementKind("none");
+        finishMovement();
         setStatusMsg("已到达终点");
         fireToast("已到达终点");
       }
@@ -1541,7 +1913,7 @@ export function App({ shared }: AppProps = {}) {
     applyDrawnPath([]);
     setRoutes(usable);
     setRouteIndex(0);
-    setSelection(choice);
+    updateSelection(choice);
     setStatusMsg("");
     lap("完成");
   }
@@ -1642,8 +2014,8 @@ export function App({ shared }: AppProps = {}) {
 
     stopMovement();
     joystickPosition.setValue(start);
-    setMovementKind("joystick");
-    setSelection(choice);
+    updateMovementKind("joystick");
+    updateSelection(choice);
     setStatusMsg(`摇杆 · ${modeInfo(choice.mode).label} ${(choice.speed.metresPerSecond * 3.6).toFixed(1)} km/h`);
 
     const timer = setInterval(() => {
@@ -1700,12 +2072,58 @@ export function App({ shared }: AppProps = {}) {
       try {
         await handle.stop();
       } catch (e) {
-        // 卡片和恢复记录都留着：停止指令没送到，设备可能还在模拟，
+        debugLog("ui", "停止失败，试着重连补发", describeError(e));
+        /*
+          别只报错，先自己补救一次。
+
+          停止失败几乎都是隧道已经断了（锁屏掉线、网络切换），那条会话的通道
+          没了，`handle.stop()` 自然发不出去——用户看到的是
+          `RSDCDTunnelTransport.Failure 错误 7` 这种天书。
+
+          而「不建会话、只连上去补发一次停止」本来就有现成的
+          `restoreRealLocation`（上次没收尾时走的就是它）。隧道断了就重连一条，
+          比让用户自己「重新连接后再停一次」靠谱得多。
+        */
+        const record = pairingRef.current;
+        if (record) {
+          /*
+            补发期间别让界面装作没事。
+
+            上面已经把 sessionState 设成了 idle，而这一段要连设备、建隧道，
+            慢的时候好几秒。那期间按钮是「开始位置模拟」的样子，用户一点就
+            又建一条隧道——而同时只允许一条。所以先回到 connecting，
+            补完（成或败）再落回 idle。
+          */
+          setSessionState("connecting");
+          setStatusMsg("连接已断开，正在重连补发停止…");
+          try {
+            await restoreRealLocation({
+              record,
+              endpoint: {
+                host: settingsRef.current.deviceHost,
+                source: settingsRef.current.tunnelSource,
+              },
+            });
+            debugLog("ui", "重连补发停止成功");
+            clearRecovery();
+            void endLiveActivity();
+            fireToast("已恢复真实位置");
+            return null;
+          } catch (retryError) {
+            debugLog("ui", "重连补发也失败", describeError(retryError));
+          } finally {
+            setSessionState("idle");
+            setStatusMsg("");
+          }
+        }
+
+        // 补救也没成。卡片和恢复记录都留着：停止指令没送到，设备可能还在模拟，
         // 卡片得继续提醒，下次启动也要接着提示恢复。
-        // 说清后果：会话这边已经作废，但停止指令没送到，设备很可能还在模拟
         const message =
-          `停止时出错：${e instanceof Error ? e.message : String(e)}。` +
-          "设备可能仍在模拟位置，重新连接后再停一次。";
+          "没能停止模拟\n" +
+          `${e instanceof Error ? e.message : String(e)}\n\n` +
+          "已自动重连补发过一次，仍然没送到。设备很可能还停在模拟位置——" +
+          "回到这里重新连接一次再停，或者用锁屏卡片上的「恢复真实位置」。";
         if (!silent) showMessage(message);
         return message;
       }
@@ -2111,7 +2529,7 @@ export function App({ shared }: AppProps = {}) {
                 recenterCoord.setValue({ latitude: coordLat.value, longitude: coordLng.value })
               }
               onStop={() => {
-                stopMovement();
+                finishMovement();
                 // 推的过程中只同步了坐标，地名还停在出发地——停下来补一次反查。
                 void resolvePlaceName(coordLat.value, coordLng.value);
               }}
@@ -2281,7 +2699,7 @@ export function App({ shared }: AppProps = {}) {
             ) : null}
             {movementKind !== "none" ? (
               <Button
-                action={stopMovement}
+                action={finishMovement}
                 frame={{ maxWidth: "infinity" }}
                 background={{ style: "systemRed", shape: "capsule" }}
                 tint="white"
@@ -2374,6 +2792,7 @@ export function App({ shared }: AppProps = {}) {
           <CellularGuide
             stage={guideStage.value}
             attempts={guideAttempts.value}
+            onCellular={onCellular.value}
             onRetry={() => void retryFromGuide()}
             onRetryNow={attemptInGuide}
             onUseCellular={beginGuideLoop}

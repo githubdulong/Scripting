@@ -119,76 +119,33 @@ export function clearRecovery(): void {
 //
 // 恢复按钮的 intent 跑在单独的环境里，碰不到主脚本手上的会话。而会话的心跳
 // 每 4 秒把假坐标重发一遍——intent 自己连上去发停止，几秒后就被盖回去。
-// 所以主脚本开着会话时，intent 只递话，由主脚本用现成的连接收尾，再回执。
+// 所以主脚本开着会话时，intent 只递话，由主脚本用现成的连接收尾。
+//
+// 传话本身交给 `ScriptSession`（主脚本 register、intent request），这里只负责
+// 把那个 session ID 存下来给 intent 读。
+//
+// 以前是拿 Storage 当信箱：主脚本每秒轮询有没有请求、顺手写一次心跳，intent
+// 投完请求每 300 毫秒查一次回执，还要 TTL 和撤回防止陈年请求误伤新会话。
+// 八个函数、两个轮询、五个常量，全部由 register/request 这一对取代。
 
-/** 恢复请求的处理结果；message 是失败时给人看的原因 */
-export interface RestoreAck {
-  id: string;
-  ok: boolean;
-  message?: string;
+/** 主脚本注册成功后写下 session ID，供 intent 取用。 */
+export function saveSessionID(id: string): void {
+  Storage.set(STORAGE_KEYS.sessionID, id);
 }
 
-/** 主脚本会话进行中时周期性写入，intent 据此判断主脚本还在不在。 */
-export function markSessionBeat(): void {
-  Storage.set(STORAGE_KEYS.sessionBeat, Date.now());
-}
-
-export function clearSessionBeat(): void {
-  Storage.remove(STORAGE_KEYS.sessionBeat);
-}
-
-/** 距主脚本上次报平安过了多久（毫秒）；从没报过返回 Infinity。 */
-export function sessionBeatAge(): number {
-  const at = Storage.get<number>(STORAGE_KEYS.sessionBeat);
-  return at == null ? Infinity : Date.now() - at;
-}
-
-/** 请求多久不处理就作废。intent 等回执的上限是 10 秒，这里留足余量。 */
-const RESTORE_REQUEST_TTL_MS = 15_000;
-
-/** intent 发起恢复请求，返回请求编号，用来认领回执。 */
-export function requestRestore(): string {
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  Storage.set(STORAGE_KEYS.restoreRequest, id);
-  return id;
+export function clearSessionID(): void {
+  Storage.remove(STORAGE_KEYS.sessionID);
 }
 
 /**
- * intent 等不到回执时撤回自己那条请求。
+ * 读主脚本的 session ID。
  *
- * 不撤的话它会一直躺在 storage 里：intent 超时后自己连设备停掉了，用户隔一会儿
- * 重新开始模拟，主脚本的轮询取到这条陈年请求，当场把新会话停了。
- * 带上 id 是防止误删——那时候可能已经是别人的请求了。
+ * 可能是**陈旧**的：主脚本退出时 session 会被系统关掉，而这里的 ID 还留着。
+ * 不必特意清理——拿它去 request 会直接失败，调用方据此回落到自己连设备，
+ * 这正是想要的行为。
  */
-export function withdrawRestoreRequest(id: string): void {
-  if (Storage.get<string>(STORAGE_KEYS.restoreRequest) === id) {
-    Storage.remove(STORAGE_KEYS.restoreRequest);
-  }
-}
-
-/**
- * 主脚本取走待处理的恢复请求，取完即删；没有返回 null。
- *
- * 过期的直接丢掉：id 前缀就是发起时间，超过 TTL 说明 intent 早已放弃、
- * 多半自己把位置恢复了，这时候再停一次只会打断用户新开的会话。
- */
-export function takeRestoreRequest(): string | null {
-  const id = Storage.get<string>(STORAGE_KEYS.restoreRequest);
-  if (id == null) return null;
-  Storage.remove(STORAGE_KEYS.restoreRequest);
-  const issuedAt = Number(id.split("-")[0]);
-  if (Number.isFinite(issuedAt) && Date.now() - issuedAt > RESTORE_REQUEST_TTL_MS) return null;
-  return id;
-}
-
-export function ackRestore(ack: RestoreAck): void {
-  Storage.set(STORAGE_KEYS.restoreAck, ack);
-}
-
-/** 读编号为 id 的回执；还没回或是别的请求的回执都返回 null。 */
-export function loadRestoreAck(id: string): RestoreAck | null {
-  const ack = Storage.get<RestoreAck>(STORAGE_KEYS.restoreAck);
-  return ack?.id === id ? ack : null;
+export function loadSessionID(): string | null {
+  return Storage.get<string>(STORAGE_KEYS.sessionID);
 }
 
 // ── 当前生效坐标缓存 ─────────────────────────────────────────────────

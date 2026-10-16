@@ -193,6 +193,13 @@ export class DtxConnection {
    * 都可能是 1，只看 identifier 会把广播当成回包。
    */
   async waitForReply(identifier: number, timeoutMs = 15000): Promise<DtxMessage> {
+    /*
+      「设备回了错误包」和「没读到回复」是两码事，只有后者必须关连接。
+
+      用对象存标志而不是裸 let：裸的会被 TypeScript 的控制流分析窄化成字面量
+      false（赋值发生在嵌套的 async 闭包里），catch 里的判断就恒真了。
+    */
+    const replied = { withDeviceError: false };
     try { return await withTimeout(
       (async () => {
         for (;;) {
@@ -200,15 +207,27 @@ export class DtxConnection {
           if (message.identifier !== identifier || message.conversationIndex < 1) continue;
 
           const error = describeArchivedError(message.payload);
-          if (error) throw new Error(`设备返回错误：${error}`);
+          if (error) {
+            replied.withDeviceError = true;
+            throw new Error(`设备返回错误：${error}`);
+          }
           return message;
         }
       })(),
       timeoutMs,
       "等待设备回应超时",
     ); } catch (error) {
-      // A timed-out reader must not consume the next operation's reply.
-      await this.close().catch(() => undefined);
+      /*
+        读超时或读失败时必须关：读者已经错位，下一次调用会读到这一次的回包。
+
+        但设备**明确回了一个 NSError** 时不能关——那说明链路好好的，只是这次
+        调用被拒了（坐标越界之类）。以前一律关掉，后果是：心跳只要撞上一次
+        错误包，之后每一拍都必然失败，`KEEPALIVE_MAX_MISSES` 那 4 拍宽限
+        形同虚设，会话必被拆掉。idevice 的 remote_server.rs 也只在读失败时关。
+      */
+      if (!replied.withDeviceError) {
+        await this.close().catch(() => undefined);
+      }
       throw error;
     }
   }

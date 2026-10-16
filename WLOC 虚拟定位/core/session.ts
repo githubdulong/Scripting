@@ -12,7 +12,7 @@ import { debugLog, describeError } from "./debug";
 import { DtxConnection } from "./dtx";
 import { LocationSimulation } from "./location";
 import { RemotePairingClient, RpPairingSocket, type PeerHandshakeInfo } from "./rppairing";
-import { connectTCP, probeTCP } from "./tcp";
+import { connectTCP, probeTCP, probeTCPDetail } from "./tcp";
 import { discoverPairingService } from "./bonjour";
 import { probeTlsPsk } from "./tlsprobe";
 import { delay, withTimeout, type ByteStream } from "./stream";
@@ -51,6 +51,16 @@ const KEEPALIVE_INTERVAL = 4000;
   真断了也就多等十几秒，比动不动拆隧道重建划算得多。
 */
 const KEEPALIVE_MAX_MISSES = 4;
+/**
+ * 建隧道的超时，交给 openRSDTunnel 的原生 timeout 参数。正常是百毫秒级。
+ *
+ * **单位是毫秒，但 dts 没写明。** 全库凡是标了单位的 timeout 都是毫秒
+ * （`ScriptSession.request` 写的是 "10000 ms"，`Bonjour.resolve` 写的是
+ * "in milliseconds"），而 15000 秒当隧道超时毫无意义，所以按毫秒用。
+ * 验证方法：开着飞行模式点开始模拟——15 秒左右报超时就是毫秒；一直挂着
+ * 不报，说明被当成了秒，那就退回自己包 withTimeout。
+ */
+const TUNNEL_OPEN_TIMEOUT_MS = 15_000;
 /**
  * 「只绑回环」这个判定在失败文案里的标记。
  * 引导和锁屏通知都靠这句话认出这类失败并换成短提示，改文案时别把它改没了。
@@ -209,10 +219,11 @@ async function ensureTunnelReady(endpoint: TunnelEndpoint, log: StatusReporter):
       之所以还留着：`ECONNREFUSED` 和超时的区别很有价值——前者说明回环通了
       只是没服务，后者说明代理根本没把这个地址接回来。两种情况要做的事完全不同。
     */
-    const reachable = await probeTCP(endpoint.host, PORT_RANGE_START, 1500);
+    const probe = await probeTCPDetail(endpoint.host, PORT_RANGE_START, 1500);
     debugLog(
       "vpn",
-      `代理模式下 ${endpoint.host}:${PORT_RANGE_START} ${reachable ? "可达" : "无响应"}` +
+      `代理模式下 ${endpoint.host}:${PORT_RANGE_START} ` +
+        `${probe.open ? "可达" : describeProbeFailure(probe.code, endpoint)}` +
         "（只探这一个端口，服务可能在别的端口上，以扫描结果为准）",
     );
     return;
@@ -565,6 +576,20 @@ function loopbackOnlyFailure(endpoint: TunnelEndpoint): string {
         "跟 Scripting 自身隧道走的不是同一条路。实在不行改连 WiFi。";
 }
 
+/**
+ * 是不是「按脚本授权」被拒。
+ *
+ * 开了「Require Per-Script Permission」又拒掉 localDevVPN 之后，相关调用会直接
+ * 报权限错。那个错会一路漏到建隧道那一步，被包装成「卡在隧道握手」，把人引去
+ * 查代理和网络——而真正要做的只是去设置里重新允许。
+ *
+ * **具体措辞 dts 没写**，所以这里按关键词粗匹配，宁可漏判也不误判：真机上
+ * 拒一次拿到原文后，把准确的串补进来。
+ */
+function looksLikeAccessDenied(message: string): boolean {
+  return /denied|not permitted|no access|权限|未授权|拒绝访问/i.test(message);
+}
+
 function describePairingFailure(endpoint: TunnelEndpoint, tried: number, error: unknown): string {
   const code = (error as { code?: string } | null)?.code ?? "";
   const message = error instanceof Error ? error.message : String(error);
@@ -680,6 +705,33 @@ export interface DiagnosticItem {
  * 这种话——它说的是「这次没读到」，不是「隧道坏了」。代理工具正在连接、或者
  * 系统在切换 VPN 时很容易撞上，诊断页一进来就跑，撞上的概率不低。
  */
+/**
+ * 端口探测失败了，到底卡在哪一层。
+ *
+ * 代理模式下这个区分尤其要紧，因为两种结果指向相反的方向：
+ * 「拒绝」说明回环**是通的**（包回到了本机，只是没服务在听），该查配对服务；
+ * 「超时」说明包压根没被反射回来，该查代理工具本身。
+ * 诊断页以前一律写「无响应」，等于把这个线索扔了。
+ */
+function describeProbeFailure(code: string | null, endpoint: TunnelEndpoint): string {
+  const proxy = endpoint.source === "proxyApp";
+  switch (code) {
+    case "ECONNREFUSED":
+      return proxy
+        ? "拒绝连接（回环是通的，但那个端口上没有配对服务）"
+        : "拒绝连接（流量到了本机，但那个端口上没有服务）";
+    case "ETIMEDOUT":
+      return proxy
+        ? "无响应（包没被反射回来，代理工具的回环可能没生效）"
+        : "无响应（本机隧道可能没真正建立）";
+    case "ENETUNREACH":
+    case "EHOSTUNREACH":
+      return "路由不存在（飞行模式开着，或者网络断了）";
+    default:
+      return `连不上${code ? `（${code}）` : ""}`;
+  }
+}
+
 function describeStateError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/changed.*(read|saving)|while reading/i.test(message)) {
@@ -697,11 +749,33 @@ function describeStateError(error: unknown): string {
 export async function collectDiagnostics(options: {
   endpoint: TunnelEndpoint;
   record: PairingRecord | null;
+  /**
+   * 当前有没有正在跑的模拟会话。由调用方给——这一层是协议层，不该去翻 UI 的缓存。
+   *
+   * 它只影响文案，不影响任何检测：体检测的始终是「现在重新连一次能不能通」。
+   */
+  simulating?: boolean;
   onStatus?: StatusReporter;
 }): Promise<DiagnosticItem[]> {
   const log = options.onStatus ?? (() => {});
   const items: DiagnosticItem[] = [];
   const endpoint = options.endpoint;
+
+  /*
+    先说清楚「正在模拟」和「现在能不能连」是两件事。
+
+    真机日志（2026-10-16，WiFi 建会话后切到蜂窝）里，连着四次诊断「配对端口」
+    都是红叉，而那会儿定位模拟好好地跑着、坐标还在下发。原因是蜂窝下
+    remotepairingd 不在那个地址上监听了，可**已经建好的隧道不受影响**。
+    不点破这一点，用户看到红叉只会以为坏了。
+  */
+  if (options.simulating) {
+    items.push({
+      label: "当前状态",
+      value: "模拟进行中。下面测的是「重新连一次」能不能成，红叉不代表当前会话有问题",
+      ok: null,
+    });
+  }
 
   items.push({
     label: "隧道来源",
@@ -712,6 +786,20 @@ export async function collectDiagnostics(options: {
   items.push({
     label: "系统版本",
     value: `${Device.systemName} ${Device.systemVersion} · ${Device.model}`,
+    ok: null,
+  });
+  /*
+    宿主版本。
+
+    排查用户反馈时最缺的就是这一项——同样的脚本在不同 Scripting 版本上行为
+    可以完全不同（openRSDTunnel 对代理回环的要求就改过一次），而光看系统版本
+    分辨不出来。`Device.appVersion` 是这次 TF 新加的，之前只能靠猜。
+  */
+  items.push({
+    label: "Scripting 版本",
+    value: Device.appVersion
+      ? `${Device.appVersion}${Device.appBuildNumber ? ` (${Device.appBuildNumber})` : ""}`
+      : "（读不到）",
     ok: null,
   });
 
@@ -782,17 +870,22 @@ export async function collectDiagnostics(options: {
   pushTarget(probes, { host: endpoint.host, port: PORT_RANGE_START });
 
   let reachable: PairingTarget | null = null;
+  // 最后一次失败的原因。「拒绝」和「超时」要查的东西完全相反，不能都写成「无响应」。
+  let lastProbeCode: string | null = null;
   for (const target of probes) {
-    if (await probeTCP(target.host, target.port, 1500)) {
+    const result = await probeTCPDetail(target.host, target.port, 1500);
+    if (result.open) {
       reachable = target;
       break;
     }
+    lastProbeCode = result.code;
   }
   items.push({
     label: "配对端口",
     value: reachable
       ? `${reachable.host}:${reachable.port} 可达`
-      : `${probes.map((target) => `${target.host}:${target.port}`).join("、")} 无响应`,
+      : `${probes.map((target) => `${target.host}:${target.port}`).join("、")}` +
+        ` ${describeProbeFailure(lastProbeCode, endpoint)}`,
     ok: !!reachable,
   });
 
@@ -888,27 +981,38 @@ async function openTunnelWithDiagnostics(
   try {
     debugLog("tunnel", `openRSDTunnel host=${endpoint.host} port=${firstPort}`);
     /*
-      必须包超时。
+      用原生的 timeout，不再自己包 withTimeout。
 
-      openRSDTunnel 自己不超时：对端不回 TLS 握手时它就一直挂着，既不成功也不
-      失败。飞行模式下正是这样——界面停在「建立加密隧道…」，上层的重试循环
-      以为这一轮还在跑，于是再也不发起下一轮（蜂窝引导就栽在这儿，试两次就死）。
-      15 秒：正常建隧道是百毫秒级，这个值只用来兜住挂死。
+      这个参数是 2026-10-16 那版 TF 新给的。以前只能在外面包一层计时器，但
+      `withTimeout` 只是**放弃等待**——底下那次 openRSDTunnel 还挂着，没人收。
+      原生超时会真的把它停掉，而且配套给了 `cancelRSDTunnelOpening()`。
+
+      为什么非要超时：openRSDTunnel 自己不超时，对端不回 TLS 握手时就一直挂着，
+      既不成功也不失败。飞行模式下正是这样——界面停在「建立加密隧道…」，
+      上层的重试循环以为这一轮还在跑，再也不发起下一轮（蜂窝引导就栽在这儿，
+      试两次就死）。15 秒：正常建隧道是百毫秒级，这个值只用来兜住挂死。
     */
-    const tunnel = await withTimeout(
-      VPN.localDevVPN.openRSDTunnel({
-        host: endpoint.host,
-        port: firstPort,
-        preSharedKey,
-      }),
-      15000,
-      `建立加密隧道超时（端口 ${firstPort}）`,
-    );
+    const tunnel = await VPN.localDevVPN.openRSDTunnel({
+      host: endpoint.host,
+      port: firstPort,
+      preSharedKey,
+      timeout: TUNNEL_OPEN_TIMEOUT_MS,
+    });
     debugLog("tunnel", "隧道已建立", JSON.stringify(await tunnel.getState()));
     return tunnel;
   } catch (error) {
     lastError = error;
     debugLog("tunnel", "openRSDTunnel 失败", describeError(error));
+    /*
+      失败后主动收尾。
+
+      原生超时和我们这边放弃之后，那次「正在打开」可能还在原生侧挂着；
+      下一轮重试撞上它会得到莫名其妙的状态。这个 API 同样是新加的，
+      文档写明它只取消**未完成的打开**，不会动已经建好的隧道，所以是安全的。
+    */
+    await VPN.localDevVPN.cancelRSDTunnelOpening().catch((cleanupError: unknown) => {
+      debugLog("tunnel", "取消未完成的隧道打开失败（忽略）", describeError(cleanupError));
+    });
   }
 
   /*
@@ -925,12 +1029,29 @@ async function openTunnelWithDiagnostics(
   // openRSDTunnel 的 Failure 6，该 bug 已修；而探测会消费掉一次性的隧道监听，
   // 让这次失败更难复查。要取证的话去「连接状态」页手动跑。
   const detail = lastError instanceof Error ? lastError.message : String(lastError);
+  /*
+    权限被拒时别说成「卡在隧道握手」。
+
+    开了「按脚本单独授权」又拒掉 localDevVPN，错误就从这儿冒出来——而上面
+    那句会把人引去查代理、查网络、查配对，全都白费。
+  */
+  if (looksLikeAccessDenied(detail)) {
+    throw new Error(
+      [
+        "缺少「本机开发者隧道」权限",
+        detail,
+        "",
+        "这台设备开启了「按脚本单独授权」，而本脚本的 localDevVPN 被拒过。",
+        "去 Scripting 的设置里找到本脚本，把这项权限重新允许。",
+      ].join("\n"),
+    );
+  }
   throw new Error(
-    `建立加密隧道失败：${detail}
-` +
-      `（端口 ${firstPort}，PSK ${preSharedKey.length} 字节）
-` +
-      "配对与申请监听都已成功，卡在隧道握手这一步。详细日志见 scripting-cli 终端。",
+    [
+      `建立加密隧道失败：${detail}`,
+      `（端口 ${firstPort}，PSK ${preSharedKey.length} 字节）`,
+      "配对与申请监听都已成功，卡在隧道握手这一步。详细日志见「连接状态 → 导出日志」。",
+    ].join("\n"),
   );
 }
 
@@ -1141,7 +1262,9 @@ export async function probeTunnelTls(
   await ensureTunnelReady(endpoint, log);
   const session = await openPairingSession(endpoint, log);
   try {
-    await session.client.validatePairing(record);
+    // 必须包超时：node:net 没有读超时，设备不回话时会永远挂着
+    // （PIN 配对后界面会一直停在「验证新配对记录…」）。与 openLocationChannel 取同一个值。
+    await withTimeout(session.client.validatePairing(record), 20000, "pair-verify 超时");
     log("申请探测用端口…");
     const port = await withTimeout(session.client.createTcpListener(), 15000, "申请端口超时");
     log(`用端口 ${port} 发 ClientHello…`);
@@ -1169,7 +1292,9 @@ export async function verifyPairingRecord(
   await ensureTunnelReady(endpoint, log);
   const session = await openPairingSession(endpoint, log);
   try {
-    await session.client.validatePairing(record);
+    // 必须包超时：node:net 没有读超时，设备不回话时会永远挂着
+    // （PIN 配对后界面会一直停在「验证新配对记录…」）。与 openLocationChannel 取同一个值。
+    await withTimeout(session.client.validatePairing(record), 20000, "pair-verify 超时");
   } finally {
     await session.stream.close().catch(() => undefined);
   }
@@ -1262,8 +1387,18 @@ function createHandle(context: {
       这里是同一个思路的下沉实现——让隧道活着，重连就不必发生。
     */
     let misses = 0;
+    /*
+      上一拍没落地就跳过这一拍。
+
+      `enqueue` 是串行队列，而设备不回包时单个任务要等满 15 秒。没有这道闸的话，
+      4 秒一拍会不断往队列里堆，排在后面的拍一个接一个地超时——「连续失败 4 次」
+      于是可能要攒上一分钟，掉线判定被拖得毫无意义。移动中更糟：每 0.5 秒还有
+      一个坐标在排队，心跳挤在它们后面。
+    */
+    let beating = false;
     keepalive = setInterval(() => {
-      if (stopped) return;
+      if (stopped || beating) return;
+      beating = true;
       void enqueue(() => context.simulation.set(latitude, longitude))
         .then(() => {
           if (misses > 0) {
@@ -1286,6 +1421,10 @@ function createHandle(context: {
           context.onFailure?.(
             `定位会话已中断：${error instanceof Error ? error.message : String(error)}`,
           );
+        })
+        // 成败都要放闸，否则一次失败之后心跳就彻底不再发了。
+        .finally(() => {
+          beating = false;
         });
     }, KEEPALIVE_INTERVAL);
   }
@@ -1294,9 +1433,17 @@ function createHandle(context: {
     peer: context.peer,
     async update(nextLatitude: number, nextLongitude: number): Promise<void> {
       if (stopped) throw new Error("定位会话已结束");
+      /*
+        **先下发成功，再记进心跳。** 顺序反了后果很重：
+
+        `simulation.set` 自己会校验坐标，越界时抛错。而上一版是先把
+        `latitude/longitude` 写掉再下发——一次坏坐标进了闭包，之后每一拍心跳
+        都拿着它去 set，拍拍必败，`KEEPALIVE_MAX_MISSES` 数满就把整条会话拆了。
+        一次手滑的输入能毁掉一条好好的会话。
+      */
+      await enqueue(() => context.simulation.set(nextLatitude, nextLongitude));
       latitude = nextLatitude;
       longitude = nextLongitude;
-      await enqueue(() => context.simulation.set(nextLatitude, nextLongitude));
     },
     async stop(): Promise<void> {
       if (stopped) return;

@@ -117,9 +117,20 @@ function readLegacy(): PairingRecord | null {
 
 // ── 解析导入的文件 ──────────────────────────────────────────────────────────
 
-/** 私钥可能是裸种子，也可能带 PKCS#8/DER 外壳——末尾 32 字节即种子。 */
+/**
+ * 从导入的私钥里取出 32 字节种子。
+ *
+ * 三种形态，**不能一律取末尾**：
+ *
+ * - 32 字节：本身就是种子。
+ * - 64 字节：libsodium / NaCl 的约定是 `种子32 ‖ 公钥32`，要取**前** 32。
+ *   取末尾会拿到公钥——拿公钥当私钥去签名必然失败，而报出来的是
+ *   「设备拒绝了配对」，根本看不出是解析错了。
+ * - 其他 >32（PKCS#8 / DER 外壳，如 `302e...0420` 前缀）：种子在尾部，取末尾。
+ */
 function seed32(bytes: Uint8Array): Uint8Array {
   if (bytes.length === 32) return bytes;
+  if (bytes.length === 64) return bytes.subarray(0, 32);
   if (bytes.length > 32) return bytes.subarray(bytes.length - 32);
   throw new Error(`私钥只有 ${bytes.length} 字节，无法取出 32 字节种子`);
 }

@@ -22,7 +22,13 @@ import {
 } from "scripting";
 
 export type GuideStage =
-  /** 发现失败，先问清是 WiFi 还是蜂窝——我们读不到网络类型，只能让用户自己说。 */
+  /**
+   * 发现失败。
+   *
+   * 以前这一步要问「你在用 WiFi 还是蜂窝」——读不到网络类型，只能让用户自己说。
+   * `Device.getNetworkState()` 到位后不必问了：用的什么网脚本自己知道，
+   * 这一页只负责按实际情况说话。
+   */
   | "help"
   /** 等用户开关飞行模式，期间后台每隔几秒重试一次。 */
   | "airplaneOn"
@@ -33,6 +39,12 @@ interface CellularGuideProps {
   stage: GuideStage;
   /** 「打开飞行模式」阶段已经重试了多少次，让用户看出它真的在试。 */
   attempts: number;
+  /**
+   * 当前在用蜂窝吗。`null` 表示还没测出来（读网络状态要等系统给首个路径）。
+   *
+   * 决定第一页说什么、以及要不要直接把「我正在使用移动数据」这一步省掉。
+   */
+  onCellular: boolean | null;
   /** 第一阶段的「重试」：退出引导直接再连一次。 */
   onRetry: () => void;
   /** 第二阶段的「继续」：立刻多试一次，人留在引导里。 */
@@ -132,6 +144,7 @@ function HintLabel({ text, systemImage }: { text: string; systemImage: string })
 export function CellularGuide({
   stage,
   attempts,
+  onCellular,
   onRetry,
   onRetryNow,
   onUseCellular,
@@ -155,9 +168,23 @@ export function CellularGuide({
   const title =
     stage === "help" ? "连不上这台设备" : stage === "airplaneOn" ? "打开飞行模式" : "关闭飞行模式";
 
+  /*
+    第一页按实测到的网络说话。
+
+    以前这里只能写「用 WiFi 的话…确实在用 4G/5G 时，才选…」，把判断推给用户，
+    而用户多半也不确定自己算哪种（插着 WiFi 但走了蜂窝的情况太常见）。
+    现在网络类型是读出来的，直接说结论。
+  */
+  const helpMessage =
+    onCellular === true
+      ? "检测到正在用蜂窝数据。\n配对服务只在本地网络上公布自己，蜂窝接口上找不到它——开关一次飞行模式就能接上。"
+      : onCellular === false
+        ? "检测到正在用 WiFi。\n这种情况下通常不是网络的问题：先确认隧道（或代理工具）已连接，再重试。"
+        : "先确认隧道已连接再重试。\n如果在用 4G / 5G，选下面那一项走引导。";
+
   const message =
     stage === "help"
-      ? "用 WiFi 的话，先确认隧道已连接再重试。\n确实在用 4G / 5G 时，才选「我正在使用移动数据」。"
+      ? helpMessage
       : stage === "airplaneOn"
         ? "请先确认代理工具显示为已连接，再打开飞行模式，然后返回这里。\n" +
           "等隧道重新连上就可以关掉飞行模式了——越快越好，拖久了反而连不上。"
@@ -194,11 +221,28 @@ export function CellularGuide({
       {stage === "help" ? (
         <VStack spacing={12} frame={{ maxWidth: "infinity" }}>
           <HintLabel
-            text="配对服务靠本地网络公告自己，蜂窝接口上没有本地链路，找不到它。"
+            text={
+              onCellular === false
+                ? "WiFi 下配对服务通常找得到，先看隧道那一侧：代理工具在跑吗、回环生效了吗。"
+                : "配对服务靠本地网络公告自己，蜂窝接口上没有本地链路，找不到它。"
+            }
             systemImage="lock.shield"
           />
-          <PrimaryButton title="重试" tint="systemBlue" action={onRetry} />
-          <SecondaryButton title="我正在使用移动数据" action={onUseCellular} />
+          {/*
+            已经测出在用蜂窝，就不必再让用户自己选一次——直接把「开关飞行模式」
+            作为主操作。测不出来（null）或确定在 WiFi 时，才保留原来那两个选项。
+          */}
+          {onCellular === true ? (
+            <>
+              <PrimaryButton title="开始引导" tint="systemBlue" action={onUseCellular} />
+              <SecondaryButton title="只是重试一次" action={onRetry} />
+            </>
+          ) : (
+            <>
+              <PrimaryButton title="重试" tint="systemBlue" action={onRetry} />
+              <SecondaryButton title="我正在使用移动数据" action={onUseCellular} />
+            </>
+          )}
           <TextButton title="取消" action={onCancel} />
         </VStack>
       ) : stage === "airplaneOn" ? (

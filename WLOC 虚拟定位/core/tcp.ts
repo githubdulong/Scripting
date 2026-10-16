@@ -99,12 +99,31 @@ export function connectTCP(host: string, port: number, timeoutMs = 5000): Promis
 }
 
 /** 只测连通性，连上立刻断开。用于扫描设备的配对端口。 */
-export function probeTCP(host: string, port: number, timeoutMs: number): Promise<boolean> {
+export interface ProbeResult {
+  open: boolean;
+  /** 失败时的错误码；超时记作 `ETIMEDOUT`。成功为 null。 */
+  code: string | null;
+}
+
+/**
+ * 探一个端口，**并带回失败原因**。
+ *
+ * 失败的几种原因意义完全不同，不能都算作「不通」：
+ *
+ * - `ECONNREFUSED` —— 流量到了本机、对面回了 RST，只是那个端口上没有服务。
+ *   代理模式下这说明回环**是生效的**，该去查配对服务。
+ * - `ETIMEDOUT`（我们自己的计时器）—— 石沉大海。代理模式下这反而说明
+ *   **回环没生效**，包根本没被反射回来，该去查代理工具。
+ * - `ENETUNREACH` / `EHOSTUNREACH` —— 连路由都没有，多半是飞行模式或断网。
+ *
+ * 诊断页以前一律显示「无响应」，把这三种混成一句，排查时等于没说。
+ */
+export function probeTCPDetail(host: string, port: number, timeoutMs: number): Promise<ProbeResult> {
   return new Promise((resolve) => {
     const socket = createConnection({ host, port });
     let settled = false;
 
-    function settle(result: boolean) {
+    function settle(result: ProbeResult) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -112,8 +131,15 @@ export function probeTCP(host: string, port: number, timeoutMs: number): Promise
       resolve(result);
     }
 
-    const timer = setTimeout(() => settle(false), timeoutMs);
-    socket.on("connect", () => settle(true));
-    socket.on("error", () => settle(false));
+    const timer = setTimeout(() => settle({ open: false, code: "ETIMEDOUT" }), timeoutMs);
+    socket.on("connect", () => settle({ open: true, code: null }));
+    socket.on("error", (error: unknown) => {
+      settle({ open: false, code: (error as { code?: string } | null)?.code ?? "UNKNOWN" });
+    });
   });
+}
+
+/** 只关心开没开。端口扫描成百上千次地调它，不需要原因。 */
+export function probeTCP(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return probeTCPDetail(host, port, timeoutMs).then((result) => result.open);
 }

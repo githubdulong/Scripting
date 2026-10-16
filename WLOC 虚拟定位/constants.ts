@@ -171,10 +171,14 @@ export const STORAGE_KEYS = {
   settings: "wloc_settings",
   activeCache: "wloc_active_cache",
   recovery: "wloc_session_recovery",
-  // 卡片上的恢复按钮与主脚本之间传话用，见 utils/storage.ts
-  sessionBeat: "wloc_session_beat",
-  restoreRequest: "wloc_restore_request",
-  restoreAck: "wloc_restore_ack",
+  /*
+    卡片上的恢复按钮与主脚本之间传话用，见 utils/storage.ts。
+
+    只剩一个 session ID。以前这里有三个键（心跳 / 请求 / 回执）——那是拿 Storage
+    当信箱、两头轮询的做法，现在交给 `ScriptSession` 了。旧键不必迁移也不必
+    清理：没有代码再读它们，下次装新版就是多三个没人管的值。
+  */
+  sessionID: "wloc_session_id",
 } as const;
 
 /** 地图图层可选项（id → 显示名） */
