@@ -129,6 +129,26 @@ async function readLocalDevState(): Promise<VPNLocalDevState> {
   }
 }
 
+/**
+ * 只作记录用的状态读取：读不到返回 null，**绝不中断流程**。
+ *
+ * 这个状态在好几处只是拿来写一行日志、或者在代理模式下压根不参与判断。
+ * 2.6.1 只给 ensureTunnelReady 里那一处加了容错，结果真机日志显示启动仍然
+ * 失败在另一处——`openDeviceChannel` 里那个注释写着「只作记录」的读取
+ * （日志里「自身生效地址」那行从未出现，就是它抛的）。
+ *
+ * 凡是「读到了锦上添花、读不到也能继续」的地方，一律走这个；只有 builtIn
+ * 模式下那条必须确认隧道生效的路径才用会抛的版本。
+ */
+async function tryReadLocalDevState(): Promise<VPNLocalDevState | null> {
+  try {
+    return await readLocalDevState();
+  } catch (error) {
+    debugLog("vpn", "读自身隧道状态失败（只影响日志，不中断）", describeError(error));
+    return null;
+  }
+}
+
 async function ensureTunnelReady(endpoint: TunnelEndpoint, log: StatusReporter): Promise<void> {
   if (endpoint.source === "proxyApp") {
     /*
@@ -145,13 +165,8 @@ async function ensureTunnelReady(endpoint: TunnelEndpoint, log: StatusReporter):
       要不要打开开关。代理模式下那条隧道本来就不归我们管，为了两句提示把整条
       路堵死完全不值。下面 setEnabled 失败时早就知道「仍继续尝试」，这里却没有。
     */
-    let state: VPNLocalDevState | null = null;
-    try {
-      state = await readLocalDevState();
-      debugLog("vpn", "代理模式，自身隧道状态", JSON.stringify(state));
-    } catch (error) {
-      debugLog("vpn", "代理模式读自身隧道状态失败，跳过（不影响代理提供的回环）", describeError(error));
-    }
+    const state = await tryReadLocalDevState();
+    debugLog("vpn", "代理模式，自身隧道状态", JSON.stringify(state ?? "（读不到，跳过）"));
 
     // Scripting 自己的 VPN 还连着就等于占着唯一的 VPN 名额，代理工具根本起不来。
     if (state?.vpnStatus === "connected") {
@@ -266,7 +281,15 @@ async function startLocalDevVPN(log: StatusReporter): Promise<VPNLocalDevState> 
 
   for (let attempt = 0; attempt < 20; attempt++) {
     await delay(500);
-    state = await readLocalDevState();
+    /*
+      这一轮没读到就等下一轮。
+
+      轮询本来就有 20 次机会，没必要为一次并发冲突把整个启动判死——而
+      「VPN 正在变化」恰恰是轮询期间最可能发生的事，我们等的就是它变完。
+    */
+    const polled = await tryReadLocalDevState();
+    if (!polled) continue;
+    state = polled;
     debugLog("vpn", `第 ${attempt + 1} 次轮询`, JSON.stringify(state));
     if (state.effectiveStatus === "active") return state;
     if (state.problem) log(`隧道：${state.problem}`);
@@ -851,11 +874,12 @@ async function openTunnelWithDiagnostics(
     结果还是弹我们自己那句「只接受 Scripting 自己的回环」，用户以为是应用没改。
     现在代理模式下只记一笔就放行，成不成交给 openRSDTunnel 自己说。
   */
-  const preflight = await readLocalDevState();
+  // 代理模式下这个状态只记一笔，读不到也要放行；builtIn 才拿它当拦截条件。
+  const preflight = await tryReadLocalDevState();
   debugLog("tunnel", `开隧道前自身状态（来源=${endpoint.source}）`, JSON.stringify(preflight));
-  if (endpoint.source === "builtIn" && preflight.effectiveStatus !== "active") {
+  if (endpoint.source === "builtIn" && preflight?.effectiveStatus !== "active") {
     throw new Error(
-      `本机隧道尚未生效（${preflight.effectiveStatus}，VPN ${preflight.vpnStatus}）。
+      `本机隧道尚未生效（${preflight?.effectiveStatus ?? "状态读不到"}，VPN ${preflight?.vpnStatus ?? "未知"}）。
 ` +
         "请确认 Scripting 已获得 VPN 权限，且系统里没有别的 VPN 占着。",
     );
@@ -942,9 +966,12 @@ async function openLocationChannel(
   // 自身的反射地址只作记录。2026-10-16 实测：代理工具模式下自身隧道 inactive、
   // effectiveAddresses 为空，openRSDTunnel 照样能建起来——它已经不要求对端地址
   // 出现在自己的反射列表里了。所以这里不再当成「可能被拒」的征兆。
-  const vpnState = await readLocalDevState();
-  debugLog("vpn", "自身生效地址", JSON.stringify(vpnState.effectiveAddresses));
-  if (!vpnState.effectiveAddresses.some((address) => address.split("/")[0] === endpoint.host)) {
+  //
+  // **只作记录就要真的只作记录**：这一行以前会抛，于是读不到状态时整个启动
+  // 就断在这儿了，而它的产物只是下面那行日志。
+  const vpnState = await tryReadLocalDevState();
+  debugLog("vpn", "自身生效地址", JSON.stringify(vpnState?.effectiveAddresses ?? "（状态读不到）"));
+  if (vpnState && !vpnState.effectiveAddresses.some((address) => address.split("/")[0] === endpoint.host)) {
     debugLog(
       "vpn",
       `${endpoint.host} 不在自身隧道的生效地址里（来源=${endpoint.source}）——` +
